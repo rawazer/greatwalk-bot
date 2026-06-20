@@ -5,8 +5,12 @@ from __future__ import annotations
 import argparse
 import sys
 from datetime import date
+from pathlib import Path
 
+from greatwalkbot.config import load_watch_config
 from greatwalkbot.display import format_availability_table
+from greatwalkbot.monitoring.watcher import Watcher
+from greatwalkbot.notifications.console import ConsoleNotifier
 from greatwalkbot.sources.http import HttpAvailabilitySource
 from greatwalkbot.sources.playwright import PlaywrightAvailabilitySource
 from greatwalkbot.sources.protocol import AvailabilitySource
@@ -46,6 +50,28 @@ def _cmd_check(args: argparse.Namespace) -> int:
         return 1
 
 
+def _cmd_watch(args: argparse.Namespace) -> int:
+    try:
+        config = load_watch_config(args.config)
+        source_name = args.source or config.source
+        source = _build_source(source_name, args.headed)
+        watcher = Watcher(
+            config,
+            source,
+            ConsoleNotifier(),
+        )
+
+        if args.once:
+            watcher.run_once()
+            return 0
+
+        watcher.run_forever()
+        return 0
+    except (ValueError, RuntimeError, FileNotFoundError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="gwbot", description="DOC Great Walk availability checker")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -66,6 +92,26 @@ def main(argv: list[str] | None = None) -> int:
         help="Show browser window (may help if AWS WAF blocks headless traffic)",
     )
     check.set_defaults(func=_cmd_check)
+
+    watch = subparsers.add_parser("watch", help="Monitor availability using a YAML config file")
+    watch.add_argument("config", type=Path, help="Path to watch configuration YAML")
+    watch.add_argument(
+        "--source",
+        choices=("playwright", "http"),
+        default=None,
+        help="Override data source from config",
+    )
+    watch.add_argument(
+        "--headed",
+        action="store_true",
+        help="Show browser window (may help if AWS WAF blocks headless traffic)",
+    )
+    watch.add_argument(
+        "--once",
+        action="store_true",
+        help="Run a single check cycle then exit",
+    )
+    watch.set_defaults(func=_cmd_watch)
 
     args = parser.parse_args(argv)
     return args.func(args)

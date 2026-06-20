@@ -2,7 +2,7 @@
 
 Open-source assistant for monitoring availability on the New Zealand DOC booking website.
 
-**Status:** Milestone 1 — read-only availability checker.
+**Status:** Milestone 2 — configuration-driven watch mode.
 
 ## Quick start
 
@@ -11,32 +11,49 @@ Requires [uv](https://docs.astral.sh/uv/) and Python 3.13+.
 ```bash
 uv sync
 uv run playwright install chromium
+
+# One-shot check
 uv run gwbot check --track milford --from 2026-12-07 --to 2026-12-14
+
+# Long-running watch (copy and edit config first)
+cp config.example.yaml config.yaml
+uv run gwbot watch config.yaml
 ```
 
-If headless runs are blocked by AWS WAF, retry with a visible browser:
-
-```bash
-uv run gwbot check --track milford --from 2026-12-07 --to 2026-12-14 --headed
-```
+Use `--headed` if AWS WAF blocks headless traffic. Use `gwbot watch config.yaml --once` for a single poll cycle.
 
 ## Project layout
 
 ```
 greatwalkbot/
-├── docs/                  # Reverse-engineering notes
-├── scripts/               # Investigation scripts (Milestone 0)
+├── config.example.yaml    # Sample watch configuration
+├── docs/
 ├── src/greatwalkbot/
-│   ├── models.py          # Track, AvailabilityDay, AvailabilitySnapshot
-│   ├── parsing.py         # Tyler RDR response parsing
+│   ├── config/            # YAML config loading
+│   ├── monitoring/        # Matcher, dedupe, watch loop
+│   ├── notifications/     # Notifier interface (console today)
 │   ├── sources/           # Playwright and HTTP backends
-│   └── cli.py             # gwbot CLI
+│   └── cli.py
 └── tests/
 ```
 
-## Architecture
+## Watch configuration
 
-Availability is fetched from the Tyler RDR endpoint `POST search/greatwalkplacefacility`. The default **Playwright** source loads the public DOC booking SPA (establishing an AWS WAF session), selects the track, and intercepts the grid request with your date range. An **HTTP** source implements the same interface for direct API calls (usually blocked by WAF).
+```yaml
+party_size: 2
+polling_interval: 300  # seconds
+
+tracks:
+  - track: milford
+    preferred:
+      - from: 2026-12-07
+        to: 2026-12-14
+    acceptable:
+      - from: 2026-12-01
+        to: 2026-12-31
+```
+
+The watcher polls each track over its acceptable date ranges, matches availability against preferred/acceptable windows and party size, logs timestamped check results, and notifies only when **new** itineraries appear.
 
 ## Documentation
 

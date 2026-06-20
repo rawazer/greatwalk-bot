@@ -1,0 +1,10 @@
+party_size: 2
+polling_interval: 300
+tracks:
+  - track: milford
+    preferred:
+      - from: 2026-12-07
+        to: 2026-12-14
+    acceptable:
+      - from: 2026-12-01
+        to: 2026-12-31
