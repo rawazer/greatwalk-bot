@@ -1,25 +1,63 @@
-# Example GreatWalkBot watch configuration.
+# GreatWalkBot trip configuration
 # Copy to config.yaml and adjust for your trip.
 
-party_size: 2
 polling_interval: 300  # seconds between checks
+
+trip:
+  name: New Zealand Honeymoon
+
+party:
+  adults: 2
+
+travel_window:
+  start: 2026-11-29
+  end: 2026-12-31
 
 tracks:
   - track: milford
-    preferred:
-      - from: 2026-12-07
-        to: 2026-12-14
-    acceptable:
-      - from: 2026-12-01
-        to: 2026-12-31
+    priority: 100
+    complete_itinerary_only: true
+    preferred_start_dates:
+      - 2026-12-07
+      - 2026-12-08
+      - 2026-12-09
+    acceptable_start_range:
+      start: 2026-12-03
+      end: 2026-12-23
 
   - track: routeburn
-    preferred:
-      - from: 2026-10-01
-        to: 2026-10-07
-    acceptable:
-      - from: 2026-09-15
-        to: 2026-11-30
+    priority: 90
+    direction: either
+    complete_itinerary_only: true
+    preferred_start_range:
+      start: 2026-12-06
+      end: 2026-12-14
+    acceptable_start_range:
+      start: 2026-12-03
+      end: 2026-12-23
+
+  - track: kepler
+    priority: 80
+    complete_itinerary_only: true
+    preferred_start_range:
+      start: 2026-12-10
+      end: 2026-12-18
+    acceptable_start_range:
+      start: 2026-12-03
+      end: 2026-12-23
 
 # Optional: data source (playwright or http). CLI --source overrides this.
 # source: playwright
+
+# Legacy watch format (still supported):
+#
+# party_size: 2
+# polling_interval: 300
+# tracks:
+#   - track: milford
+#     preferred:
+#       - from: 2026-12-07
+#         to: 2026-12-14
+#     acceptable:
+#       - from: 2026-12-01
+#         to: 2026-12-31

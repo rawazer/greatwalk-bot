@@ -1,0 +1,15 @@
+polling_interval: 300
+trip:
+  name: Test Trip
+party:
+  adults: 2
+travel_window:
+  start: 2026-12-01
+  end: 2026-12-31
+tracks:
+  - track: milford
+    preferred_start_dates:
+      - 2026-12-07
+    acceptable_start_range:
+      start: 2026-12-01
+      end: 2026-12-31

@@ -7,7 +7,7 @@ import time
 from collections.abc import Callable
 from datetime import datetime, timezone
 
-from greatwalkbot.config.models import WatchConfig
+from greatwalkbot.domain.plan import TripPlan
 from greatwalkbot.models import Track
 from greatwalkbot.monitoring.dedupe import SeenAvailabilityStore
 from greatwalkbot.monitoring.matcher import find_matching_itineraries
@@ -42,7 +42,7 @@ class Watcher:
 
     def __init__(
         self,
-        config: WatchConfig,
+        plan: TripPlan,
         source: AvailabilitySource,
         notifier: Notifier,
         *,
@@ -50,7 +50,7 @@ class Watcher:
         logger: LogFn | None = None,
         seen_store: SeenAvailabilityStore | None = None,
     ) -> None:
-        self.config = config
+        self.plan = plan
         self.source = source
         self.notifier = notifier
         self._resolve_track = resolve_track_fn
@@ -66,35 +66,35 @@ class Watcher:
 
     def run_once(self) -> WatchCycleResult:
         track_results: list[TrackCheckResult] = []
+        trip = self.plan.trip
 
-        for track_config in self.config.tracks:
-            track = self._get_track(track_config.slug)
-            bounds = track_config.query_bounds()
+        for track_preference in trip.tracks:
+            track = self._get_track(track_preference.slug)
+            bounds = track_preference.query_bounds(trip.travel_window)
 
             try:
                 snapshot = self.source.fetch_track_availability(
                     track,
-                    bounds.from_date,
-                    bounds.to_date,
+                    bounds.start,
+                    bounds.end,
                 )
             except Exception as exc:
-                self._logger(
-                    f"{_timestamp()} [error] {track.name}: {exc}"
-                )
+                self._logger(f"{_timestamp()} [error] {track.name}: {exc}")
                 continue
 
             matches = find_matching_itineraries(
                 snapshot,
-                track_config,
-                self.config.party_size,
+                track_preference,
+                trip.party,
+                trip.travel_window,
             )
             new_matches = self._seen.filter_new(matches)
 
             _log_check(
                 self._logger,
                 track.name,
-                bounds.from_date,
-                bounds.to_date,
+                bounds.start,
+                bounds.end,
                 len(matches),
                 len(new_matches),
             )
@@ -107,8 +107,8 @@ class Watcher:
                 TrackCheckResult(
                     track_slug=track.slug,
                     track_name=track.name,
-                    from_date=bounds.from_date,
-                    to_date=bounds.to_date,
+                    from_date=bounds.start,
+                    to_date=bounds.end,
                     matches=matches,
                     new_matches=new_matches,
                 )
@@ -120,14 +120,15 @@ class Watcher:
         )
 
     def run_forever(self) -> None:
+        trip = self.plan.trip
         self._logger(
-            f"{_timestamp()} [watch] started "
-            f"(interval={self.config.polling_interval_seconds}s, "
-            f"party_size={self.config.party_size}, tracks={len(self.config.tracks)})"
+            f"{_timestamp()} [watch] started trip={trip.name!r} "
+            f"(interval={self.plan.polling_interval_seconds}s, "
+            f"party_size={trip.party.size}, tracks={len(trip.tracks)})"
         )
         try:
             while True:
                 self.run_once()
-                time.sleep(self.config.polling_interval_seconds)
+                time.sleep(self.plan.polling_interval_seconds)
         except KeyboardInterrupt:
             self._logger(f"{_timestamp()} [watch] stopped")

@@ -1,4 +1,4 @@
-"""Load watch configuration from YAML."""
+"""Load trip plan configuration from YAML."""
 
 from __future__ import annotations
 
@@ -8,7 +8,12 @@ from typing import Any
 
 import yaml
 
-from greatwalkbot.config.models import DateRange, TrackWatchConfig, WatchConfig
+from greatwalkbot.domain.dates import DateRange, TravelWindow
+from greatwalkbot.domain.direction import DirectionPreference
+from greatwalkbot.domain.party import Party
+from greatwalkbot.domain.plan import TripPlan
+from greatwalkbot.domain.track import TrackPreference
+from greatwalkbot.domain.trip import Trip
 from greatwalkbot.tracks import resolve_track
 
 
@@ -23,67 +28,174 @@ def _parse_date(value: Any, field: str) -> date:
     raise ValueError(f"{field} must be a date string, got {type(value).__name__}")
 
 
-def _parse_range(raw: Any, context: str) -> DateRange:
+def _parse_bound_range(raw: Any, context: str) -> DateRange:
     if not isinstance(raw, dict):
-        raise ValueError(f"{context} must be a mapping with from/to")
-    if "from" not in raw or "to" not in raw:
-        raise ValueError(f"{context} must include from and to")
+        raise ValueError(f"{context} must be a mapping")
+    start_key = "start" if "start" in raw else "from"
+    end_key = "end" if "end" in raw else "to"
+    if start_key not in raw or end_key not in raw:
+        raise ValueError(f"{context} must include start/end (or from/to)")
     return DateRange(
-        _parse_date(raw["from"], f"{context}.from"),
-        _parse_date(raw["to"], f"{context}.to"),
+        _parse_date(raw[start_key], f"{context}.{start_key}"),
+        _parse_date(raw[end_key], f"{context}.{end_key}"),
     )
 
 
-def _parse_ranges(raw: Any, context: str) -> tuple[DateRange, ...]:
+def _parse_date_list(raw: Any, context: str) -> tuple[date, ...]:
     if raw is None:
         return ()
     if not isinstance(raw, list):
-        raise ValueError(f"{context} must be a list")
-    return tuple(_parse_range(item, f"{context}[{i}]") for i, item in enumerate(raw))
+        raise ValueError(f"{context} must be a list of dates")
+    return tuple(_parse_date(item, f"{context}[{i}]") for i, item in enumerate(raw))
 
 
-def _parse_track(raw: Any, index: int) -> TrackWatchConfig:
+def _parse_legacy_ranges(raw: Any, context: str) -> tuple[DateRange, ...]:
+    if not isinstance(raw, list) or not raw:
+        raise ValueError(f"{context} must be a non-empty list")
+    return tuple(_parse_bound_range(item, f"{context}[{i}]") for i, item in enumerate(raw))
+
+
+def _union_ranges(ranges: tuple[DateRange, ...]) -> DateRange:
+    return DateRange(
+        min(r.start for r in ranges),
+        max(r.end for r in ranges),
+    )
+
+
+def _parse_track_preference(raw: Any, index: int, travel_window: TravelWindow) -> TrackPreference:
     context = f"tracks[{index}]"
     if not isinstance(raw, dict):
         raise ValueError(f"{context} must be a mapping")
+
     slug = raw.get("track") or raw.get("slug") or raw.get("name")
     if not slug or not isinstance(slug, str):
-        raise ValueError(f"{context} must include a track slug (track/slug/name)")
+        raise ValueError(f"{context} must include a track slug")
 
-    preferred = _parse_ranges(raw.get("preferred"), f"{context}.preferred")
-    acceptable = _parse_ranges(raw.get("acceptable"), f"{context}.acceptable")
-    if not acceptable:
-        raise ValueError(f"{context} must define at least one acceptable date range")
-    if not preferred:
-        raise ValueError(f"{context} must define at least one preferred date range")
+    if "preferred" in raw or "acceptable" in raw:
+        return _legacy_track_to_preference(raw, index, travel_window)
+
+    acceptable = _parse_bound_range(
+        raw.get("acceptable_start_range"),
+        f"{context}.acceptable_start_range",
+    )
+    preferred_dates = _parse_date_list(
+        raw.get("preferred_start_dates"),
+        f"{context}.preferred_start_dates",
+    )
+    preferred_range_raw = raw.get("preferred_start_range")
+    preferred_range = (
+        _parse_bound_range(preferred_range_raw, f"{context}.preferred_start_range")
+        if preferred_range_raw is not None
+        else None
+    )
+
+    direction_raw = raw.get("direction", "either")
+    direction = (
+        DirectionPreference.parse(direction_raw)
+        if isinstance(direction_raw, str)
+        else DirectionPreference.EITHER
+    )
+
+    priority = raw.get("priority", 50)
+    if not isinstance(priority, int):
+        raise ValueError(f"{context}.priority must be an integer")
+
+    complete = raw.get("complete_itinerary_only", False)
+    if not isinstance(complete, bool):
+        raise ValueError(f"{context}.complete_itinerary_only must be a boolean")
+
+    resolved = resolve_track(slug)
+    preference = TrackPreference(
+        slug=resolved.slug,
+        acceptable_start_range=acceptable,
+        priority=priority,
+        direction=direction,
+        complete_itinerary_only=complete,
+        preferred_start_dates=preferred_dates,
+        preferred_start_range=preferred_range,
+    )
+    preference.validate_against(travel_window)
+    return preference
+
+
+def _legacy_track_to_preference(
+    raw: dict[str, Any],
+    index: int,
+    travel_window: TravelWindow,
+) -> TrackPreference:
+    context = f"tracks[{index}]"
+    slug = raw.get("track") or raw.get("slug") or raw.get("name")
+    preferred = _parse_legacy_ranges(raw.get("preferred"), f"{context}.preferred")
+    acceptable = _parse_legacy_ranges(raw.get("acceptable"), f"{context}.acceptable")
 
     for i, pref in enumerate(preferred):
         if not any(
-            pref.from_date >= acc.from_date and pref.to_date <= acc.to_date for acc in acceptable
+            pref.start >= acc.start and pref.end <= acc.end for acc in acceptable
         ):
             raise ValueError(
                 f"{context}.preferred[{i}] must fall within an acceptable date range"
             )
 
-    resolved = resolve_track(slug)
-    return TrackWatchConfig(
+    resolved = resolve_track(str(slug))
+    preference = TrackPreference(
         slug=resolved.slug,
-        preferred=preferred,
-        acceptable=acceptable,
+        acceptable_start_range=_union_ranges(acceptable),
+        preferred_start_range=_union_ranges(preferred),
+        complete_itinerary_only=False,
+    )
+    preference.validate_against(travel_window)
+    return preference
+
+
+def _parse_trip_block(raw: dict[str, Any]) -> tuple[str, Party, TravelWindow]:
+    trip_raw = raw.get("trip")
+    if not isinstance(trip_raw, dict):
+        raise ValueError("trip must be a mapping")
+
+    name = trip_raw.get("name")
+    if not name or not isinstance(name, str):
+        raise ValueError("trip.name must be a non-empty string")
+
+    party_raw = trip_raw.get("party") or raw.get("party")
+    if not isinstance(party_raw, dict):
+        raise ValueError("party must be a mapping (at root or under trip)")
+    adults = party_raw.get("adults")
+    if not isinstance(adults, int):
+        raise ValueError("party.adults must be an integer")
+
+    travel_raw = trip_raw.get("travel_window") or raw.get("travel_window")
+    if not isinstance(travel_raw, dict):
+        raise ValueError("travel_window must be a mapping (at root or under trip)")
+    travel_window = TravelWindow(
+        _parse_date(travel_raw.get("start"), "travel_window.start"),
+        _parse_date(travel_raw.get("end"), "travel_window.end"),
     )
 
+    return name.strip(), Party(adults=adults), travel_window
 
-def load_watch_config(path: str | Path) -> WatchConfig:
-    config_path = Path(path)
-    if not config_path.is_file():
-        raise FileNotFoundError(f"Config file not found: {config_path}")
 
-    with config_path.open(encoding="utf-8") as handle:
-        raw = yaml.safe_load(handle)
+def _load_trip_format(raw: dict[str, Any]) -> TripPlan:
+    name, party, travel_window = _parse_trip_block(raw)
 
-    if not isinstance(raw, dict):
-        raise ValueError("Config root must be a mapping")
+    tracks_raw = raw.get("tracks")
+    if not isinstance(tracks_raw, list) or not tracks_raw:
+        raise ValueError("tracks must be a non-empty list")
 
+    tracks = tuple(
+        _parse_track_preference(item, i, travel_window)
+        for i, item in enumerate(tracks_raw)
+    )
+
+    interval = raw.get("polling_interval") or raw.get("polling_interval_seconds")
+    if not isinstance(interval, int):
+        raise ValueError("polling_interval must be an integer (seconds)")
+
+    source = raw.get("source", "playwright")
+    trip = Trip(name=name, party=party, travel_window=travel_window, tracks=tracks)
+    return TripPlan(trip=trip, polling_interval_seconds=interval, source=source)
+
+
+def _load_legacy_format(raw: dict[str, Any]) -> TripPlan:
     party_size = raw.get("party_size")
     if not isinstance(party_size, int):
         raise ValueError("party_size must be an integer")
@@ -96,15 +208,43 @@ def load_watch_config(path: str | Path) -> WatchConfig:
     if not isinstance(tracks_raw, list) or not tracks_raw:
         raise ValueError("tracks must be a non-empty list")
 
-    source = raw.get("source", "playwright")
-    if source not in ("playwright", "http"):
-        raise ValueError("source must be playwright or http")
+    all_acceptable: list[DateRange] = []
+    for i, item in enumerate(tracks_raw):
+        if not isinstance(item, dict):
+            raise ValueError(f"tracks[{i}] must be a mapping")
+        all_acceptable.extend(
+            _parse_legacy_ranges(item.get("acceptable"), f"tracks[{i}].acceptable")
+        )
+    envelope = _union_ranges(tuple(all_acceptable))
+    travel_window = TravelWindow(envelope.start, envelope.end)
 
-    tracks = tuple(_parse_track(item, i) for i, item in enumerate(tracks_raw))
-
-    return WatchConfig(
-        party_size=party_size,
-        polling_interval_seconds=interval,
-        tracks=tracks,
-        source=source,
+    tracks = tuple(
+        _parse_track_preference(item, i, travel_window)
+        for i, item in enumerate(tracks_raw)
     )
+
+    source = raw.get("source", "playwright")
+    trip = Trip(
+        name="Watch",
+        party=Party(adults=party_size),
+        travel_window=travel_window,
+        tracks=tracks,
+    )
+    return TripPlan(trip=trip, polling_interval_seconds=interval, source=source)
+
+
+def load_watch_config(path: str | Path) -> TripPlan:
+    """Load a trip plan from YAML (supports trip and legacy watch formats)."""
+    config_path = Path(path)
+    if not config_path.is_file():
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+
+    with config_path.open(encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+
+    if not isinstance(raw, dict):
+        raise ValueError("Config root must be a mapping")
+
+    if "trip" in raw:
+        return _load_trip_format(raw)
+    return _load_legacy_format(raw)

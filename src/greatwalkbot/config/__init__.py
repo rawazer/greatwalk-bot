@@ -1,11 +1,6 @@
-"""Watch configuration."""
+"""Configuration loading."""
 
 from greatwalkbot.config.loader import load_watch_config
-from greatwalkbot.config.models import DateRange, TrackWatchConfig, WatchConfig
+from greatwalkbot.domain.plan import TripPlan
 
-__all__ = [
-    "DateRange",
-    "TrackWatchConfig",
-    "WatchConfig",
-    "load_watch_config",
-]
+__all__ = ["TripPlan", "load_watch_config"]

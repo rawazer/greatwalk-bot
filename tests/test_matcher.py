@@ -2,15 +2,20 @@
 
 from datetime import date
 
-from greatwalkbot.config.models import DateRange, TrackWatchConfig
+from greatwalkbot.domain.dates import DateRange, TravelWindow
+from greatwalkbot.domain.party import Party
+from greatwalkbot.domain.track import TrackPreference
 from greatwalkbot.models import AvailabilityDay, AvailabilitySnapshot, AvailabilityStatus, Track
 from greatwalkbot.monitoring.matcher import find_matching_itineraries
 
 MILFORD = Track("milford", "Milford Track", 873, 4, fixed_nights=3)
-TRACK_CONFIG = TrackWatchConfig(
+TRAVEL_WINDOW = TravelWindow(date(2026, 11, 29), date(2026, 12, 31))
+PARTY = Party(adults=2)
+TRACK_PREFERENCE = TrackPreference(
     slug="milford",
-    preferred=(DateRange(date(2026, 12, 7), date(2026, 12, 10)),),
-    acceptable=(DateRange(date(2026, 12, 1), date(2026, 12, 31)),),
+    acceptable_start_range=DateRange(date(2026, 12, 1), date(2026, 12, 31)),
+    preferred_start_range=DateRange(date(2026, 12, 7), date(2026, 12, 10)),
+    complete_itinerary_only=True,
 )
 
 
@@ -44,10 +49,18 @@ def test_find_preferred_and_acceptable_matches():
                 0,
                 (),
             ),
+            AvailabilityDay(
+                date(2026, 11, 1),
+                AvailabilityStatus.AVAILABLE,
+                10,
+                ("Mintaro Hut",),
+            ),
         )
     )
 
-    matches = find_matching_itineraries(snapshot, TRACK_CONFIG, party_size=2)
+    matches = find_matching_itineraries(
+        snapshot, TRACK_PREFERENCE, PARTY, TRAVEL_WINDOW
+    )
     assert len(matches) == 2
     assert matches[0].preference == "preferred"
     assert matches[0].start_date == date(2026, 12, 7)
@@ -67,5 +80,28 @@ def test_party_size_filters_small_availability():
         )
     )
 
-    matches = find_matching_itineraries(snapshot, TRACK_CONFIG, party_size=2)
+    matches = find_matching_itineraries(
+        snapshot, TRACK_PREFERENCE, PARTY, TRAVEL_WINDOW
+    )
     assert matches == ()
+
+
+def test_preferred_start_dates():
+    preference = TrackPreference(
+        slug="milford",
+        acceptable_start_range=DateRange(date(2026, 12, 1), date(2026, 12, 31)),
+        preferred_start_dates=(date(2026, 12, 8),),
+    )
+    snapshot = _snapshot(
+        (
+            AvailabilityDay(
+                date(2026, 12, 8),
+                AvailabilityStatus.AVAILABLE,
+                5,
+                ("Clinton Hut",),
+            ),
+        )
+    )
+    matches = find_matching_itineraries(snapshot, preference, PARTY, TRAVEL_WINDOW)
+    assert len(matches) == 1
+    assert matches[0].preference == "preferred"

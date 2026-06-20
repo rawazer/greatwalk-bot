@@ -2,7 +2,11 @@
 
 from datetime import date
 
-from greatwalkbot.config.models import DateRange, TrackWatchConfig, WatchConfig
+from greatwalkbot.domain.dates import DateRange, TravelWindow
+from greatwalkbot.domain.party import Party
+from greatwalkbot.domain.plan import TripPlan
+from greatwalkbot.domain.track import TrackPreference
+from greatwalkbot.domain.trip import Trip
 from greatwalkbot.models import AvailabilityDay, AvailabilitySnapshot, AvailabilityStatus, Track
 from greatwalkbot.monitoring.watcher import Watcher
 from greatwalkbot.notifications.console import ConsoleNotifier
@@ -22,18 +26,20 @@ class FakeSource:
         return self._snapshots.pop(0)
 
 
-def _config() -> WatchConfig:
-    return WatchConfig(
-        party_size=2,
-        polling_interval_seconds=60,
+def _plan() -> TripPlan:
+    trip = Trip(
+        name="Test Trip",
+        party=Party(adults=2),
+        travel_window=TravelWindow(date(2026, 12, 1), date(2026, 12, 31)),
         tracks=(
-            TrackWatchConfig(
+            TrackPreference(
                 slug="milford",
-                preferred=(DateRange(date(2026, 12, 7), date(2026, 12, 7)),),
-                acceptable=(DateRange(date(2026, 12, 1), date(2026, 12, 31)),),
+                acceptable_start_range=DateRange(date(2026, 12, 1), date(2026, 12, 31)),
+                preferred_start_dates=(date(2026, 12, 7),),
             ),
         ),
     )
+    return TripPlan(trip=trip, polling_interval_seconds=60)
 
 
 def _snapshot(status: AvailabilityStatus, spaces: int) -> AvailabilitySnapshot:
@@ -67,7 +73,7 @@ def test_watcher_notifies_only_once_for_same_availability():
         ]
     )
     watcher = Watcher(
-        _config(),
+        _plan(),
         source,
         RecordingNotifier(),
         resolve_track_fn=lambda slug: MILFORD,
