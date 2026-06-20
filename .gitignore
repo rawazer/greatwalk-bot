@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# Investigation artifacts (regenerate with scripts/)
+investigation_output/
+tmp_*.html
+tmp_*.js
+tmp_*.json
