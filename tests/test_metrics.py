@@ -15,6 +15,7 @@ def test_metrics_flush_and_load(tmp_path: Path):
 
     loaded = RuntimeMetrics.load(status_path)
     assert loaded is not None
+    assert loaded.schema_version == 1
     assert loaded.polls_completed == 1
     assert loaded.successful_polls == 1
     assert loaded.browser_restarts == 1

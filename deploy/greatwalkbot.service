@@ -1,0 +1,33 @@
+# GreatWalkBot user service (systemd --user)
+#
+# Install:
+#   1. Copy and edit paths below for your installation.
+#   2. mkdir -p ~/.config/systemd/user
+#   3. cp deploy/greatwalkbot.service ~/.config/systemd/user/
+#   4. systemctl --user daemon-reload
+#   5. systemctl --user enable --now greatwalkbot.service
+#
+# Replace:
+#   %h/greatwalk-bot     -> your clone directory
+#   config.yaml          -> your config file path (relative to WorkingDirectory)
+
+[Unit]
+Description=GreatWalkBot availability watcher
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/greatwalk-bot
+ExecStart=%h/.local/bin/uv run gwbot watch config.yaml
+Restart=on-failure
+RestartSec=30
+
+# Runtime state is written under WorkingDirectory:
+#   logs/greatwalkbot.log
+#   logs/status.json
+#   data/seen.db
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

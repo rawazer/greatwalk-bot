@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import threading
 import time
-from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+
+from greatwalkbot.monitoring.status import (
+    STATUS_SCHEMA_VERSION,
+    LastError,
+    RuntimeState,
+    StatusSnapshot,
+    atomic_write_json,
+    load_status_snapshot,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -23,19 +30,6 @@ def _iso(dt: datetime | None) -> str | None:
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-@dataclass
-class MetricsSnapshot:
-    started_at: str
-    polls_completed: int = 0
-    successful_polls: int = 0
-    failed_polls: int = 0
-    browser_restarts: int = 0
-    average_poll_duration_seconds: float = 0.0
-    last_poll_at: str | None = None
-    last_successful_poll_at: str | None = None
-    trip_name: str | None = None
-
-
 class RuntimeMetrics:
     """Collect and persist basic watcher runtime metrics."""
 
@@ -43,6 +37,7 @@ class RuntimeMetrics:
         self.status_path = status_path
         self.trip_name = trip_name
         self.started_at = _utc_now()
+        self.state = RuntimeState.STARTING
         self.polls_completed = 0
         self.successful_polls = 0
         self.failed_polls = 0
@@ -50,10 +45,24 @@ class RuntimeMetrics:
         self._total_poll_duration_seconds = 0.0
         self.last_poll_at: datetime | None = None
         self.last_successful_poll_at: datetime | None = None
+        self._last_error: LastError | None = None
         self._lock = threading.Lock()
+
+    def set_state(self, state: RuntimeState) -> None:
+        with self._lock:
+            self.state = state
+        self.flush()
 
     def record_poll_start(self) -> float:
         return time.monotonic()
+
+    def record_fetch_error(self, track_slug: str, message: str) -> None:
+        with self._lock:
+            self._last_error = LastError(
+                at=_iso(_utc_now()) or "",
+                message=message,
+                track_slug=track_slug,
+            )
 
     def record_poll_success(self, started_monotonic: float) -> None:
         duration = time.monotonic() - started_monotonic
@@ -64,6 +73,8 @@ class RuntimeMetrics:
             now = _utc_now()
             self.last_poll_at = now
             self.last_successful_poll_at = now
+            if self.state != RuntimeState.STOPPING:
+                self.state = RuntimeState.POLLING
         self.flush()
 
     def record_poll_failure(self, started_monotonic: float) -> None:
@@ -73,6 +84,8 @@ class RuntimeMetrics:
             self.failed_polls += 1
             self._total_poll_duration_seconds += duration
             self.last_poll_at = _utc_now()
+            if self.state != RuntimeState.STOPPING:
+                self.state = RuntimeState.ERROR
         self.flush()
 
     def record_browser_restart(self) -> None:
@@ -80,22 +93,17 @@ class RuntimeMetrics:
             self.browser_restarts += 1
         self.flush()
 
-    @property
-    def average_poll_duration_seconds(self) -> float:
-        with self._lock:
-            if self.polls_completed == 0:
-                return 0.0
-            return self._total_poll_duration_seconds / self.polls_completed
-
-    def snapshot(self) -> MetricsSnapshot:
+    def snapshot(self) -> StatusSnapshot:
         with self._lock:
             average = (
                 self._total_poll_duration_seconds / self.polls_completed
                 if self.polls_completed
                 else 0.0
             )
-            return MetricsSnapshot(
+            return StatusSnapshot(
+                schema_version=STATUS_SCHEMA_VERSION,
                 started_at=_iso(self.started_at) or "",
+                state=self.state.value,
                 polls_completed=self.polls_completed,
                 successful_polls=self.successful_polls,
                 failed_polls=self.failed_polls,
@@ -104,23 +112,12 @@ class RuntimeMetrics:
                 last_poll_at=_iso(self.last_poll_at),
                 last_successful_poll_at=_iso(self.last_successful_poll_at),
                 trip_name=self.trip_name,
+                last_error=self._last_error,
             )
 
     def flush(self) -> None:
-        snapshot = self.snapshot()
-        self.status_path.parent.mkdir(parents=True, exist_ok=True)
-        self.status_path.write_text(
-            json.dumps(asdict(snapshot), indent=2) + "\n",
-            encoding="utf-8",
-        )
+        atomic_write_json(self.status_path, self.snapshot().to_dict())
 
     @classmethod
-    def load(cls, status_path: Path) -> MetricsSnapshot | None:
-        if not status_path.is_file():
-            return None
-        try:
-            raw = json.loads(status_path.read_text(encoding="utf-8"))
-            return MetricsSnapshot(**raw)
-        except (json.JSONDecodeError, TypeError, ValueError):
-            logger.exception("Failed to load metrics from %s", status_path)
-            return None
+    def load(cls, status_path: Path) -> StatusSnapshot | None:
+        return load_status_snapshot(status_path)

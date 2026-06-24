@@ -49,8 +49,10 @@ def retry_call(
     policy: RetryPolicy,
     *,
     on_retry: Callable[[BaseException, int], None] | None = None,
+    sleep_fn: Callable[[float], None] | None = None,
 ) -> T:
     """Call fn with retries for transient failures."""
+    sleeper = sleep_fn or time.sleep
     last_exc: BaseException | None = None
     for attempt in range(1, policy.max_attempts + 1):
         try:
@@ -71,6 +73,6 @@ def retry_call(
                 exc,
                 delay,
             )
-            time.sleep(delay)
+            sleeper(delay)
     assert last_exc is not None
     raise last_exc

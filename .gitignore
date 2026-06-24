@@ -17,3 +17,10 @@ tmp_*.json
 # Runtime data (created by gwbot watch)
 logs/
 data/
+
+# Local configuration and secrets (never commit)
+config.yaml
+.env
+.env.*
+*.pem
+secrets/

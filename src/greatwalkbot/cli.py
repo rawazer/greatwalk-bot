@@ -150,6 +150,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
         return 1
 
     print(f"Trip: {snapshot.trip_name or 'unknown'}")
+    print(f"State: {snapshot.state}")
     print(f"Started: {snapshot.started_at}")
     print(f"Polls completed: {snapshot.polls_completed}")
     print(f"Successful polls: {snapshot.successful_polls}")
@@ -158,6 +159,12 @@ def _cmd_status(args: argparse.Namespace) -> int:
     print(f"Average poll duration: {snapshot.average_poll_duration_seconds:.1f}s")
     print(f"Last poll: {snapshot.last_poll_at or 'never'}")
     print(f"Last successful poll: {snapshot.last_successful_poll_at or 'never'}")
+    if snapshot.last_error is not None:
+        print(
+            f"Last error: {snapshot.last_error.message} "
+            f"(track={snapshot.last_error.track_slug or 'unknown'}, "
+            f"at={snapshot.last_error.at})"
+        )
     return 0
 
 

@@ -2,7 +2,7 @@
 
 Open-source assistant for planning and monitoring New Zealand DOC Great Walk trips.
 
-**Status:** Milestone 4 — production readiness.
+**Status:** Milestone 4.1 — operational verification and deployment.
 
 ## Quick start
 
@@ -84,11 +84,24 @@ Watch mode is designed for unattended long-running use:
 | **Metrics** | Runtime stats written to `logs/status.json`; inspect with `gwbot status` |
 | **Graceful shutdown** | Ctrl+C finishes the current poll, closes the browser, and flushes state |
 
+## Run unattended
+
+For a home server or VPS, see **[Deployment guide](docs/deployment.md)** — install as a `systemd --user` service, verify with `gwbot status`, and inspect [runtime state files](docs/runtime-state.md).
+
+```bash
+cp deploy/greatwalkbot.service ~/.config/systemd/user/
+systemctl --user enable --now greatwalkbot.service
+gwbot status
+```
+
+The host must stay powered on and connected for the full monitoring period.
+
 ## Project layout
 
 ```
 greatwalkbot/
 ├── config.example.yaml
+├── deploy/                # systemd unit example
 ├── logs/                  # runtime logs and status.json (created at watch time)
 ├── data/                  # persistent dedupe database (created at watch time)
 ├── src/greatwalkbot/
@@ -103,6 +116,8 @@ greatwalkbot/
 
 ## Documentation
 
+- [Deployment guide](docs/deployment.md)
+- [Runtime state contract](docs/runtime-state.md)
 - [Reverse engineering notes](docs/reverse_engineering.md)
 - [API reference](docs/api.md)
 
