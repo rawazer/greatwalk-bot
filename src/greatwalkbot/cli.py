@@ -25,6 +25,7 @@ from greatwalkbot.sources.session_manager import SessionManager
 from greatwalkbot.monitoring.trip_fit import check_trip_feasible_in_principle
 from greatwalkbot.plan_check import format_plan_check
 from greatwalkbot.bookings import format_bookings
+from greatwalkbot.preflight import format_preflight_report, run_preflight
 from greatwalkbot.tracks import resolve_track
 
 logger = logging.getLogger(__name__)
@@ -251,6 +252,46 @@ def _cmd_explain_availability(args: argparse.Namespace) -> int:
         return 1
 
 
+def _cmd_preflight(args: argparse.Namespace) -> int:
+    session_manager: SessionManager | None = None
+
+    try:
+        configure_logging(None)
+        plan = load_watch_config(args.config)
+        source_name = args.source or plan.source
+
+        retry_policy = RetryPolicy(
+            max_attempts=plan.retry.max_attempts,
+            base_delay_seconds=plan.retry.base_delay_seconds,
+            max_delay_seconds=plan.retry.max_delay_seconds,
+        )
+
+        if source_name == "playwright":
+            session_manager = SessionManager(headless=not args.headed)
+            session_manager.start()
+            source: AvailabilitySource = _build_playwright_source(
+                headed=args.headed,
+                session_manager=session_manager,
+                retry_policy=retry_policy,
+            )
+        else:
+            source = _build_http_source()
+
+        report = run_preflight(
+            plan,
+            source,
+            send_test_notification=args.send_test_notification,
+        )
+        print(format_preflight_report(report, trip_name=plan.trip.name))
+        return 0 if report.ready else 1
+    except (ValueError, RuntimeError, FileNotFoundError) as exc:
+        logger.error("Error: %s", exc)
+        return 1
+    finally:
+        if session_manager is not None:
+            session_manager.close()
+
+
 def _cmd_notify_test(args: argparse.Namespace) -> int:
     try:
         configure_logging(None)
@@ -357,8 +398,38 @@ def main(argv: list[str] | None = None) -> int:
     )
     explain.set_defaults(func=_cmd_explain_availability)
 
+    preflight = subparsers.add_parser(
+        "preflight",
+        help="Validate config, feasibility, notifications, and read-only DOC fetch",
+    )
+    preflight.add_argument("config", type=Path, help="Path to watch configuration YAML")
+    preflight.add_argument(
+        "--send-test-notification",
+        action="store_true",
+        help="Send test notification(s) through configured channels",
+    )
+    preflight.add_argument(
+        "--source",
+        choices=("playwright", "http"),
+        default=None,
+        help="Override data source from config",
+    )
+    preflight.add_argument(
+        "--headed",
+        action="store_true",
+        help="Show browser window (may help if AWS WAF blocks headless traffic)",
+    )
+    preflight.set_defaults(func=_cmd_preflight)
+
     args = parser.parse_args(argv)
-    if args.command in ("check", "notify-test", "plan-check", "bookings", "explain-availability"):
+    if args.command in (
+        "check",
+        "notify-test",
+        "plan-check",
+        "bookings",
+        "explain-availability",
+        "preflight",
+    ):
         configure_logging(None)
     return args.func(args)
 

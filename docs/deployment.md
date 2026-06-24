@@ -44,9 +44,12 @@ Replace the clone URL with your fork or mirror if needed.
 ## 3. Configure
 
 ```bash
-cp config.example.yaml config.yaml
+cp examples/nz-honeymoon-2026.yaml config.yaml
+# Or: cp config.example.yaml config.yaml
 # Edit config.yaml for your trip dates, tracks, and party size
 ```
+
+See [first-run.md](first-run.md) for the full setup workflow including `plan-check` and `preflight`.
 
 `config.yaml` is gitignored and must not be committed.
 

@@ -1,0 +1,81 @@
+# New Zealand Honeymoon 2026 — GreatWalkBot configuration template
+#
+# Copy to config.yaml and adjust as needed:
+#   cp examples/nz-honeymoon-2026.yaml config.yaml
+#
+# No secrets belong in this file. Telegram credentials are read from
+# environment variables when enabled (see notifications.telegram below).
+
+polling_interval: 300  # seconds between availability checks
+
+trip:
+  name: New Zealand Honeymoon
+
+party:
+  adults: 2
+
+travel_window:
+  start: 2026-11-29
+  end: 2026-12-31
+
+tracks:
+  - track: milford
+    priority: 100
+    complete_itinerary_only: true
+    preferred_start_dates:
+      - 2026-12-07
+      - 2026-12-08
+      - 2026-12-09
+    acceptable_start_range:
+      start: 2026-12-03
+      end: 2026-12-23
+
+  - track: routeburn
+    priority: 90
+    direction: either
+    complete_itinerary_only: true
+    preferred_start_range:
+      start: 2026-12-06
+      end: 2026-12-14
+    acceptable_start_range:
+      start: 2026-12-03
+      end: 2026-12-23
+    # After you book manually on DOC, record the confirmed itinerary:
+    # confirmed_booking:
+    #   start_date: 2026-12-10
+    #   nights: 2
+    #   direction: routeburn-shelter-to-divide
+    #   notes: "Booked manually on DOC"
+
+  - track: kepler
+    priority: 80
+    complete_itinerary_only: true
+    preferred_start_range:
+      start: 2026-12-10
+      end: 2026-12-18
+    acceptable_start_range:
+      start: 2026-12-03
+      end: 2026-12-23
+
+retry:
+  max_attempts: 3
+  base_delay_seconds: 1.0
+  max_delay_seconds: 60.0
+
+trip_fit:
+  enabled: true
+  min_rest_days_between_walks: 1
+  buffer_days_before_first_walk: 1
+  buffer_days_after_last_walk: 1
+
+notifications:
+  console: true
+  telegram:
+    enabled: false
+    # When enabling Telegram, set these environment variables (never commit values):
+    #   export GREATWALKBOT_TELEGRAM_BOT_TOKEN="..."
+    #   export GREATWALKBOT_TELEGRAM_CHAT_ID="..."
+    bot_token_env: GREATWALKBOT_TELEGRAM_BOT_TOKEN
+    chat_id_env: GREATWALKBOT_TELEGRAM_CHAT_ID
+
+# source: playwright  # default; use gwbot watch --source http to override
