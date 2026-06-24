@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 
 from greatwalkbot.domain.notifications import NotificationConfig
 from greatwalkbot.domain.trip import Trip
+from greatwalkbot.domain.trip_fit import TripFitConfig
 
 
 @dataclass(frozen=True)
@@ -28,6 +29,7 @@ class TripPlan:
     source: str = "playwright"
     retry: RetryConfig = field(default_factory=RetryConfig)
     notifications: NotificationConfig = field(default_factory=NotificationConfig)
+    trip_fit: TripFitConfig = field(default_factory=TripFitConfig)
 
     def __post_init__(self) -> None:
         if self.polling_interval_seconds < 1:

@@ -52,6 +52,13 @@ retry:
   base_delay_seconds: 1.0
   max_delay_seconds: 60.0
 
+# Optional trip-fit feasibility checks for multi-walk trips
+trip_fit:
+  enabled: true
+  min_rest_days_between_walks: 1
+  buffer_days_before_first_walk: 1
+  buffer_days_after_last_walk: 1
+
 # Optional notifications (Telegram secrets via environment variables only)
 notifications:
   console: true

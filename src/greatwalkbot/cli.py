@@ -22,6 +22,8 @@ from greatwalkbot.sources.http import HttpAvailabilitySource
 from greatwalkbot.sources.playwright import PlaywrightAvailabilitySource
 from greatwalkbot.sources.protocol import AvailabilitySource
 from greatwalkbot.sources.session_manager import SessionManager
+from greatwalkbot.monitoring.trip_fit import check_trip_feasible_in_principle
+from greatwalkbot.plan_check import format_plan_check
 from greatwalkbot.tracks import resolve_track
 
 logger = logging.getLogger(__name__)
@@ -178,6 +180,24 @@ def _cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_plan_check(args: argparse.Namespace) -> int:
+    try:
+        configure_logging(None)
+        plan = load_watch_config(args.config)
+        report = check_trip_feasible_in_principle(plan.trip, plan.trip_fit)
+        print(format_plan_check(plan))
+        if not report.feasible:
+            logger.error(
+                "Configured trip is not feasible in principle: %s",
+                ", ".join(report.reasons),
+            )
+            return 1
+        return 0
+    except (ValueError, RuntimeError, FileNotFoundError) as exc:
+        logger.error("Error: %s", exc)
+        return 1
+
+
 def _cmd_notify_test(args: argparse.Namespace) -> int:
     try:
         configure_logging(None)
@@ -250,8 +270,15 @@ def main(argv: list[str] | None = None) -> int:
     notify_test.add_argument("config", type=Path, help="Path to watch configuration YAML")
     notify_test.set_defaults(func=_cmd_notify_test)
 
+    plan_check = subparsers.add_parser(
+        "plan-check",
+        help="Inspect trip-fit feasibility without contacting DOC",
+    )
+    plan_check.add_argument("config", type=Path, help="Path to watch configuration YAML")
+    plan_check.set_defaults(func=_cmd_plan_check)
+
     args = parser.parse_args(argv)
-    if args.command in ("check", "notify-test"):
+    if args.command in ("check", "notify-test", "plan-check"):
         configure_logging(None)
     return args.func(args)
 

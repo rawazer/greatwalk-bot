@@ -2,7 +2,7 @@
 
 Open-source assistant for planning and monitoring New Zealand DOC Great Walk trips.
 
-**Status:** Milestone 5 — Telegram notifications.
+**Status:** Milestone 6 — trip-fit evaluation.
 
 ## Quick start
 
@@ -24,6 +24,9 @@ uv run gwbot status
 
 # Test Telegram/console notifications (no DOC contact)
 uv run gwbot notify-test config.yaml
+
+# Inspect trip-fit feasibility (no DOC contact)
+uv run gwbot plan-check config.yaml
 ```
 
 Use `--headed` if AWS WAF blocks headless traffic. Use `gwbot watch config.yaml --once` for a single poll cycle.
@@ -87,6 +90,7 @@ Watch mode is designed for unattended long-running use:
 | **Metrics** | Runtime stats written to `logs/status.json`; inspect with `gwbot status` |
 | **Graceful shutdown** | Ctrl+C finishes the current poll, closes the browser, and flushes state |
 | **Telegram alerts** | Optional notifications via env vars; see [Telegram setup](docs/telegram.md) |
+| **Trip-fit filtering** | Optional multi-walk feasibility check; see [trip-fit](docs/trip-fit.md) |
 
 ## Run unattended
 
@@ -123,6 +127,7 @@ greatwalkbot/
 - [Deployment guide](docs/deployment.md)
 - [Runtime state contract](docs/runtime-state.md)
 - [Telegram notifications](docs/telegram.md)
+- [Trip-fit evaluation](docs/trip-fit.md)
 - [Reverse engineering notes](docs/reverse_engineering.md)
 - [API reference](docs/api.md)
 

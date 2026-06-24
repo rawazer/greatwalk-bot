@@ -4,18 +4,11 @@ from datetime import date
 from pathlib import Path
 
 from greatwalkbot.monitoring.dedupe import SqliteSeenAvailabilityStore
-from greatwalkbot.monitoring.models import AvailableItinerary
+from support import make_itinerary
 
 
-def _itinerary(start: str) -> AvailableItinerary:
-    return AvailableItinerary(
-        track_slug="milford",
-        track_name="Milford Track",
-        start_date=date.fromisoformat(start),
-        spaces=4,
-        facilities=("Clinton Hut",),
-        preference="preferred",
-    )
+def _itinerary(start: str):
+    return make_itinerary(start_date=date.fromisoformat(start), spaces=4)
 
 
 def test_sqlite_seen_store_persists_across_instances(tmp_path: Path):

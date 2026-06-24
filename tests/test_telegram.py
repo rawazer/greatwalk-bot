@@ -13,14 +13,12 @@ from greatwalkbot.notifications.telegram import TelegramNotifier
 from greatwalkbot.notifications.telegram_client import TelegramClient
 
 
+from support import make_itinerary
+
+
 def _itinerary() -> AvailableItinerary:
-    return AvailableItinerary(
-        track_slug="milford",
-        track_name="Milford Track",
-        start_date=date(2026, 12, 7),
-        spaces=5,
+    return make_itinerary(
         facilities=("Clinton Hut", "Mintaro Hut"),
-        preference="preferred",
     )
 
 

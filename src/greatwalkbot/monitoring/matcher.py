@@ -7,6 +7,7 @@ from greatwalkbot.domain.party import Party
 from greatwalkbot.domain.track import TrackPreference
 from greatwalkbot.models import AvailabilitySnapshot, AvailabilityStatus
 from greatwalkbot.monitoring.models import AvailableItinerary
+from greatwalkbot.track_durations import end_date_for_start, get_itinerary_nights
 
 
 def find_matching_itineraries(
@@ -37,14 +38,19 @@ def find_matching_itineraries(
             # already represents whole-itinerary availability for that date.
             pass
 
+        nights = get_itinerary_nights(snapshot.track.slug)
+        start = day.date
         matches.append(
             AvailableItinerary(
                 track_slug=snapshot.track.slug,
                 track_name=snapshot.track.name,
-                start_date=day.date,
+                start_date=start,
+                end_date=end_date_for_start(start, nights),
+                itinerary_nights=nights,
                 spaces=day.spaces,
                 facilities=day.facilities,
                 preference=level,
+                complete_itinerary=True,
             )
         )
 

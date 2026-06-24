@@ -15,6 +15,7 @@ from greatwalkbot.domain.party import Party
 from greatwalkbot.domain.plan import RetryConfig, TripPlan
 from greatwalkbot.domain.track import TrackPreference
 from greatwalkbot.domain.trip import Trip
+from greatwalkbot.domain.trip_fit import TripFitConfig
 from greatwalkbot.notifications.factory import resolve_telegram_credentials
 from greatwalkbot.tracks import resolve_track
 
@@ -176,6 +177,37 @@ def _parse_trip_block(raw: dict[str, Any]) -> tuple[str, Party, TravelWindow]:
     return name.strip(), Party(adults=adults), travel_window
 
 
+def _parse_trip_fit_config(raw: dict[str, Any]) -> TripFitConfig:
+    trip_fit_raw = raw.get("trip_fit")
+    if trip_fit_raw is None:
+        return TripFitConfig()
+    if not isinstance(trip_fit_raw, dict):
+        raise ValueError("trip_fit must be a mapping")
+
+    enabled = trip_fit_raw.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ValueError("trip_fit.enabled must be a boolean")
+
+    min_rest = trip_fit_raw.get("min_rest_days_between_walks", 1)
+    if not isinstance(min_rest, int):
+        raise ValueError("trip_fit.min_rest_days_between_walks must be an integer")
+
+    buffer_before = trip_fit_raw.get("buffer_days_before_first_walk", 1)
+    if not isinstance(buffer_before, int):
+        raise ValueError("trip_fit.buffer_days_before_first_walk must be an integer")
+
+    buffer_after = trip_fit_raw.get("buffer_days_after_last_walk", 1)
+    if not isinstance(buffer_after, int):
+        raise ValueError("trip_fit.buffer_days_after_last_walk must be an integer")
+
+    return TripFitConfig(
+        enabled=enabled,
+        min_rest_days_between_walks=min_rest,
+        buffer_days_before_first_walk=buffer_before,
+        buffer_days_after_last_walk=buffer_after,
+    )
+
+
 def _parse_notifications_config(raw: dict[str, Any]) -> NotificationConfig:
     notifications_raw = raw.get("notifications")
     if notifications_raw is None:
@@ -254,6 +286,7 @@ def _build_trip_plan(
         source=source,
         retry=_parse_retry_config(raw),
         notifications=_parse_notifications_config(raw),
+        trip_fit=_parse_trip_fit_config(raw),
     )
 
 

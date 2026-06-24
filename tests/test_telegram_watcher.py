@@ -18,6 +18,7 @@ from greatwalkbot.monitoring.watcher import Watcher
 from greatwalkbot.notifications.composite import CompositeNotifier
 from greatwalkbot.notifications.console import ConsoleNotifier
 from greatwalkbot.notifications.errors import TelegramDeliveryError
+from support import make_itinerary
 
 MILFORD = Track("milford", "Milford Track", 873, 4, fixed_nights=3)
 
@@ -75,14 +76,7 @@ class SingleSnapshotSource:
 def test_composite_notifier_delivers_to_both_channels():
     ok = OkTelegramNotifier()
     notifier = CompositeNotifier((ConsoleNotifier(party_size=2), ok))
-    itinerary = AvailableItinerary(
-        track_slug="milford",
-        track_name="Milford Track",
-        start_date=date(2026, 12, 7),
-        spaces=5,
-        facilities=("Clinton Hut",),
-        preference="preferred",
-    )
+    itinerary = make_itinerary()
     notifier.notify_new_availability(itinerary)
     assert ok.sent == ["2026-12-07"]
 
@@ -94,14 +88,7 @@ def test_telegram_failure_does_not_stop_other_notifiers(tmp_path):
         (ConsoleNotifier(party_size=2), FailingTelegramNotifier(), ok),
         metrics=metrics,
     )
-    itinerary = AvailableItinerary(
-        track_slug="milford",
-        track_name="Milford Track",
-        start_date=date(2026, 12, 7),
-        spaces=5,
-        facilities=("Clinton Hut",),
-        preference="preferred",
-    )
+    itinerary = make_itinerary()
     notifier.notify_new_availability(itinerary)
 
     loaded = RuntimeMetrics.load(tmp_path / "status.json")

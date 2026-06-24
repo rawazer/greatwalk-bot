@@ -21,6 +21,8 @@ from greatwalkbot.monitoring.metrics import RuntimeMetrics
 from greatwalkbot.monitoring.models import AvailableItinerary
 from greatwalkbot.monitoring.watcher import Watcher
 from greatwalkbot.notifications.console import ConsoleNotifier
+from support import make_itinerary
+from support import make_itinerary
 from greatwalkbot.sources.playwright import PlaywrightAvailabilitySource
 
 MILFORD = Track("milford", "Milford Track", 873, 4, fixed_nights=3)
@@ -182,14 +184,7 @@ def test_failed_poll_recorded_without_stopping_future_cycles(tmp_path):
 
 def test_persistent_dedupe_survives_store_recreation(tmp_path):
     db_path = tmp_path / "seen.db"
-    itinerary = AvailableItinerary(
-        track_slug="milford",
-        track_name="Milford Track",
-        start_date=date(2026, 12, 7),
-        spaces=4,
-        facilities=("Clinton Hut",),
-        preference="preferred",
-    )
+    itinerary = make_itinerary()
 
     store = SqliteSeenAvailabilityStore(db_path)
     store.mark_seen(itinerary)

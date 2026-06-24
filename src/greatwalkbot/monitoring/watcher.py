@@ -15,6 +15,7 @@ from greatwalkbot.monitoring.matcher import find_matching_itineraries
 from greatwalkbot.monitoring.metrics import RuntimeMetrics
 from greatwalkbot.monitoring.models import TrackCheckResult, WatchCycleResult
 from greatwalkbot.monitoring.status import RuntimeState
+from greatwalkbot.monitoring.trip_fit import evaluate_trip_fit
 from greatwalkbot.notifications.protocol import Notifier
 from greatwalkbot.sources.protocol import AvailabilitySource
 from greatwalkbot.tracks import resolve_track
@@ -95,6 +96,12 @@ class Watcher:
                 trip.party,
                 trip.travel_window,
             )
+            if self.plan.trip_fit.enabled:
+                matches = tuple(
+                    evaluate_trip_fit(itinerary, trip, self.plan.trip_fit)
+                    for itinerary in matches
+                )
+
             new_matches = self._seen.filter_new(matches)
 
             logger.info(
@@ -107,6 +114,16 @@ class Watcher:
             )
 
             for itinerary in new_matches:
+                if self.plan.trip_fit.enabled and itinerary.trip_fit is False:
+                    logger.info(
+                        "Suppressed trip-fit mismatch: %s starting %s (%s)",
+                        itinerary.track_name,
+                        itinerary.start_date.isoformat(),
+                        ", ".join(itinerary.trip_fit_reasons),
+                    )
+                    self._seen.mark_seen(itinerary)
+                    continue
+
                 self.notifier.notify_new_availability(itinerary)
                 self._seen.mark_seen(itinerary)
 
