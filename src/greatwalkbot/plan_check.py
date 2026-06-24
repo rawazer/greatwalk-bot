@@ -12,6 +12,8 @@ def format_plan_check(plan: TripPlan) -> str:
     trip_fit = plan.trip_fit
     usable = usable_window(trip.travel_window, trip_fit)
     report = check_trip_feasible_in_principle(trip, trip_fit)
+    confirmed = sorted(trip.confirmed_bookings(), key=lambda booking: booking.start_date)
+    unconfirmed = trip.unconfirmed_tracks()
 
     lines = [
         f"Trip: {trip.name}",
@@ -25,12 +27,41 @@ def format_plan_check(plan: TripPlan) -> str:
         f"  buffer_days_after_last_walk: {trip_fit.buffer_days_after_last_walk}",
         f"  usable scheduling window: {usable.start.isoformat()}..{usable.end.isoformat()}",
         "",
-        "Configured tracks:",
     ]
 
+    lines.append("Confirmed bookings:")
+    if confirmed:
+        for booking in confirmed:
+            lines.append(
+                f"  - {booking.track_slug}: {booking.start_date.isoformat()}"
+                f"..{booking.end_date.isoformat()} ({booking.nights} nights)"
+            )
+            if booking.direction:
+                lines.append(f"      direction: {booking.direction}")
+            if booking.notes:
+                lines.append(f"      notes: {booking.notes}")
+    else:
+        lines.append("  (none)")
+
+    lines.append("")
+    lines.append("Remaining walks to monitor:")
+    if unconfirmed:
+        for pref in unconfirmed:
+            nights = get_itinerary_nights(pref.slug)
+            lines.append(f"  - {pref.slug} ({nights} nights)")
+            lines.append(
+                f"      acceptable starts: {pref.acceptable_start_range.start.isoformat()}"
+                f"..{pref.acceptable_start_range.end.isoformat()}"
+            )
+    else:
+        lines.append("  (none — all configured tracks are confirmed)")
+
+    lines.append("")
+    lines.append("All configured tracks:")
     for pref in trip.tracks:
         nights = get_itinerary_nights(pref.slug)
-        lines.append(f"  - {pref.slug}")
+        status = "confirmed" if pref.confirmed_booking else "monitoring"
+        lines.append(f"  - {pref.slug} [{status}]")
         lines.append(
             f"      acceptable starts: {pref.acceptable_start_range.start.isoformat()}"
             f"..{pref.acceptable_start_range.end.isoformat()}"
@@ -39,10 +70,31 @@ def format_plan_check(plan: TripPlan) -> str:
         lines.append(f"      direction: {pref.direction.value}")
 
     lines.append("")
-    if report.feasible:
-        lines.append("Feasibility: YES — all configured walks can fit in principle.")
+    if not unconfirmed:
+        lines.append(
+            "Feasibility: YES — no remaining walks to schedule "
+            "(all tracks confirmed)."
+        )
+    elif report.feasible:
+        if confirmed:
+            lines.append(
+                "Feasibility: YES — remaining walks can fit around "
+                "confirmed bookings in principle."
+            )
+        else:
+            lines.append(
+                "Feasibility: YES — all configured walks can fit in principle."
+            )
     else:
-        lines.append("Feasibility: NO — configured walks cannot all fit in principle.")
+        if confirmed:
+            lines.append(
+                "Feasibility: NO — remaining walks cannot fit around "
+                "confirmed bookings in principle."
+            )
+        else:
+            lines.append(
+                "Feasibility: NO — configured walks cannot all fit in principle."
+            )
         lines.append(f"Reasons: {', '.join(report.reasons)}")
 
     lines.append("")

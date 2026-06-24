@@ -24,6 +24,7 @@ from greatwalkbot.sources.protocol import AvailabilitySource
 from greatwalkbot.sources.session_manager import SessionManager
 from greatwalkbot.monitoring.trip_fit import check_trip_feasible_in_principle
 from greatwalkbot.plan_check import format_plan_check
+from greatwalkbot.bookings import format_bookings
 from greatwalkbot.tracks import resolve_track
 
 logger = logging.getLogger(__name__)
@@ -198,6 +199,17 @@ def _cmd_plan_check(args: argparse.Namespace) -> int:
         return 1
 
 
+def _cmd_bookings(args: argparse.Namespace) -> int:
+    try:
+        configure_logging(None)
+        plan = load_watch_config(args.config)
+        print(format_bookings(plan))
+        return 0
+    except (ValueError, RuntimeError, FileNotFoundError) as exc:
+        logger.error("Error: %s", exc)
+        return 1
+
+
 def _cmd_notify_test(args: argparse.Namespace) -> int:
     try:
         configure_logging(None)
@@ -277,8 +289,15 @@ def main(argv: list[str] | None = None) -> int:
     plan_check.add_argument("config", type=Path, help="Path to watch configuration YAML")
     plan_check.set_defaults(func=_cmd_plan_check)
 
+    bookings = subparsers.add_parser(
+        "bookings",
+        help="List confirmed bookings without contacting DOC",
+    )
+    bookings.add_argument("config", type=Path, help="Path to watch configuration YAML")
+    bookings.set_defaults(func=_cmd_bookings)
+
     args = parser.parse_args(argv)
-    if args.command in ("check", "notify-test", "plan-check"):
+    if args.command in ("check", "notify-test", "plan-check", "bookings"):
         configure_logging(None)
     return args.func(args)
 

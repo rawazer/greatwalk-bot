@@ -8,6 +8,7 @@ from typing import Literal
 
 from greatwalkbot.domain.dates import DateRange, TravelWindow
 from greatwalkbot.domain.direction import DirectionPreference
+from greatwalkbot.domain.confirmed_booking import ConfirmedBooking
 
 PreferenceLevel = Literal["preferred", "acceptable"]
 
@@ -21,6 +22,7 @@ class TrackPreference:
     complete_itinerary_only: bool = False
     preferred_start_dates: tuple[date, ...] = ()
     preferred_start_range: DateRange | None = None
+    confirmed_booking: ConfirmedBooking | None = None
 
     def __post_init__(self) -> None:
         if not 0 <= self.priority <= 100:

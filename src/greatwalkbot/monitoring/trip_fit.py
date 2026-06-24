@@ -7,6 +7,7 @@ from datetime import date, timedelta
 from itertools import permutations
 
 from greatwalkbot.domain.dates import DateRange, TravelWindow
+from greatwalkbot.domain.confirmed_booking import ConfirmedBooking
 from greatwalkbot.domain.trip import Trip
 from greatwalkbot.domain.trip_fit import TripFitConfig
 from greatwalkbot.domain.track import TrackPreference
@@ -33,6 +34,15 @@ def usable_window(travel_window: TravelWindow, trip_fit: TripFitConfig) -> DateR
     return DateRange(
         travel_window.start + timedelta(days=trip_fit.buffer_days_before_first_walk),
         travel_window.end - timedelta(days=trip_fit.buffer_days_after_last_walk),
+    )
+
+
+def confirmed_booking_to_interval(booking: ConfirmedBooking) -> WalkInterval:
+    return WalkInterval(
+        track_slug=booking.track_slug,
+        start_date=booking.start_date,
+        end_date=booking.end_date,
+        itinerary_nights=booking.nights,
     )
 
 
@@ -115,7 +125,7 @@ def _earliest_start(
 def _can_schedule(
     tracks: tuple[TrackPreference, ...],
     *,
-    fixed: WalkInterval | None,
+    fixed: tuple[WalkInterval, ...] = (),
     usable: DateRange,
     min_rest_days: int,
 ) -> bool:
@@ -125,9 +135,7 @@ def _can_schedule(
         return False
 
     for order in permutations(tracks):
-        placed: list[WalkInterval] = []
-        if fixed is not None:
-            placed.append(fixed)
+        placed: list[WalkInterval] = list(fixed)
         success = True
         for pref in order:
             start = _earliest_start(pref, tuple(placed), usable, min_rest_days)
@@ -151,6 +159,10 @@ def evaluate_trip_fit(
 
     usable = usable_window(trip.travel_window, trip_fit)
     candidate = itinerary_to_interval(itinerary)
+    min_rest = trip_fit.min_rest_days_between_walks
+    confirmed = tuple(
+        confirmed_booking_to_interval(booking) for booking in trip.confirmed_bookings()
+    )
 
     buffer_reasons = _buffer_violation_reasons(
         candidate, trip.travel_window, usable
@@ -158,14 +170,24 @@ def evaluate_trip_fit(
     if buffer_reasons:
         return itinerary.with_trip_fit(trip_fit=False, reasons=buffer_reasons)
 
+    for fixed in confirmed:
+        if _conflicts(candidate, fixed, min_rest):
+            return itinerary.with_trip_fit(
+                trip_fit=False,
+                reasons=("conflicts_with_confirmed_booking",),
+            )
+
     remaining = tuple(
-        pref for pref in trip.tracks if pref.slug != itinerary.track_slug
+        pref
+        for pref in trip.unconfirmed_tracks()
+        if pref.slug != itinerary.track_slug
     )
+    all_fixed = confirmed + (candidate,)
     if _can_schedule(
         remaining,
-        fixed=candidate,
+        fixed=all_fixed,
         usable=usable,
-        min_rest_days=trip_fit.min_rest_days_between_walks,
+        min_rest_days=min_rest,
     ):
         return itinerary.with_trip_fit(trip_fit=True)
 
@@ -188,9 +210,14 @@ def check_trip_feasible_in_principle(
             usable_window=usable,
         )
 
+    confirmed = tuple(
+        confirmed_booking_to_interval(booking) for booking in trip.confirmed_bookings()
+    )
+    unconfirmed = trip.unconfirmed_tracks()
+
     if _can_schedule(
-        trip.tracks,
-        fixed=None,
+        unconfirmed,
+        fixed=confirmed,
         usable=usable,
         min_rest_days=trip_fit.min_rest_days_between_walks,
     ):

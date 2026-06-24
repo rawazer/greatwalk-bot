@@ -16,6 +16,11 @@ from greatwalkbot.domain.plan import RetryConfig, TripPlan
 from greatwalkbot.domain.track import TrackPreference
 from greatwalkbot.domain.trip import Trip
 from greatwalkbot.domain.trip_fit import TripFitConfig
+from greatwalkbot.domain.confirmed_booking import ConfirmedBooking
+from greatwalkbot.config.confirmed_booking import (
+    validate_confirmed_booking_nights,
+    validate_confirmed_bookings,
+)
 from greatwalkbot.notifications.factory import resolve_telegram_credentials
 from greatwalkbot.tracks import resolve_track
 
@@ -65,6 +70,50 @@ def _union_ranges(ranges: tuple[DateRange, ...]) -> DateRange:
     )
 
 
+def _parse_confirmed_booking(
+    raw: Any,
+    *,
+    track_slug: str,
+    context: str,
+) -> ConfirmedBooking:
+    if not isinstance(raw, dict):
+        raise ValueError(f"{context} must be a mapping")
+
+    start_raw = raw.get("start_date")
+    if start_raw is None:
+        raise ValueError(f"{context}.start_date is required")
+
+    nights = raw.get("nights")
+    if not isinstance(nights, int):
+        raise ValueError(f"{context}.nights must be an integer")
+
+    allow_override = raw.get("allow_duration_override", False)
+    if not isinstance(allow_override, bool):
+        raise ValueError(f"{context}.allow_duration_override must be a boolean")
+
+    validate_confirmed_booking_nights(
+        track_slug,
+        nights,
+        allow_duration_override=allow_override,
+        context=context,
+    )
+
+    direction_raw = raw.get("direction")
+    direction = direction_raw.strip() if isinstance(direction_raw, str) else None
+
+    notes_raw = raw.get("notes")
+    notes = notes_raw.strip() if isinstance(notes_raw, str) else None
+
+    return ConfirmedBooking(
+        track_slug=track_slug,
+        start_date=_parse_date(start_raw, f"{context}.start_date"),
+        nights=nights,
+        direction=direction or None,
+        notes=notes or None,
+        allow_duration_override=allow_override,
+    )
+
+
 def _parse_track_preference(raw: Any, index: int, travel_window: TravelWindow) -> TrackPreference:
     context = f"tracks[{index}]"
     if not isinstance(raw, dict):
@@ -108,6 +157,17 @@ def _parse_track_preference(raw: Any, index: int, travel_window: TravelWindow) -
         raise ValueError(f"{context}.complete_itinerary_only must be a boolean")
 
     resolved = resolve_track(slug)
+    confirmed_raw = raw.get("confirmed_booking")
+    confirmed = (
+        _parse_confirmed_booking(
+            confirmed_raw,
+            track_slug=resolved.slug,
+            context=f"{context}.confirmed_booking",
+        )
+        if confirmed_raw is not None
+        else None
+    )
+
     preference = TrackPreference(
         slug=resolved.slug,
         acceptable_start_range=acceptable,
@@ -116,6 +176,7 @@ def _parse_track_preference(raw: Any, index: int, travel_window: TravelWindow) -
         complete_itinerary_only=complete,
         preferred_start_dates=preferred_dates,
         preferred_start_range=preferred_range,
+        confirmed_booking=confirmed,
     )
     preference.validate_against(travel_window)
     return preference
@@ -307,7 +368,9 @@ def _load_trip_format(raw: dict[str, Any]) -> TripPlan:
         raise ValueError("polling_interval must be an integer (seconds)")
 
     source = raw.get("source", "playwright")
+    trip_fit = _parse_trip_fit_config(raw)
     trip = Trip(name=name, party=party, travel_window=travel_window, tracks=tracks)
+    validate_confirmed_bookings(trip, trip_fit)
     return _build_trip_plan(raw, trip=trip, interval=interval, source=source)
 
 
@@ -340,12 +403,14 @@ def _load_legacy_format(raw: dict[str, Any]) -> TripPlan:
     )
 
     source = raw.get("source", "playwright")
+    trip_fit = _parse_trip_fit_config(raw)
     trip = Trip(
         name="Watch",
         party=Party(adults=party_size),
         travel_window=travel_window,
         tracks=tracks,
     )
+    validate_confirmed_bookings(trip, trip_fit)
     return _build_trip_plan(raw, trip=trip, interval=interval, source=source)
 
 

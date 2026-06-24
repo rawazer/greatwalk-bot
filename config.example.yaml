@@ -35,6 +35,12 @@ tracks:
     acceptable_start_range:
       start: 2026-12-03
       end: 2026-12-23
+    # After manually booking on DOC, record the confirmed itinerary:
+    # confirmed_booking:
+    #   start_date: 2026-12-10
+    #   nights: 2
+    #   direction: routeburn-shelter-to-divide
+    #   notes: "Booked manually on DOC"
 
   - track: kepler
     priority: 80

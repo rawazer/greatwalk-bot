@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from greatwalkbot.domain.party import Party
 from greatwalkbot.domain.dates import TravelWindow
 from greatwalkbot.domain.track import TrackPreference
+from greatwalkbot.domain.confirmed_booking import ConfirmedBooking
 
 
 @dataclass(frozen=True)
@@ -23,3 +24,13 @@ class Trip:
             raise ValueError("trip must include at least one track preference")
         for track in self.tracks:
             track.validate_against(self.travel_window)
+
+    def confirmed_bookings(self) -> tuple[ConfirmedBooking, ...]:
+        return tuple(
+            pref.confirmed_booking
+            for pref in self.tracks
+            if pref.confirmed_booking is not None
+        )
+
+    def unconfirmed_tracks(self) -> tuple[TrackPreference, ...]:
+        return tuple(pref for pref in self.tracks if pref.confirmed_booking is None)

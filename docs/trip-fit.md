@@ -61,23 +61,27 @@ Direction preferences (e.g. Routeburn `either`) affect booking choice only — n
 
 ## Evaluator steps
 
-For each newly matched itinerary (party size and track preference already satisfied):
+For each newly matched itinerary on an **unconfirmed** track (party size and track preference already satisfied):
 
 1. **Buffer check** — reject if the candidate violates usable window buffers.
-2. **Candidate booking** — treat the itinerary as fixed on the calendar.
-3. **Remaining tracks** — for every other configured track, check whether there exists at least one ordering and start date such that:
+2. **Confirmed booking check** — reject if the candidate overlaps a confirmed booking or leaves insufficient rest days (`conflicts_with_confirmed_booking`).
+3. **Candidate booking** — treat the itinerary as fixed on the calendar.
+4. **Remaining unconfirmed tracks** — for every other track without a `confirmed_booking`, check whether there exists at least one ordering and start date such that:
    - start falls within that track’s `acceptable_start_range` and the usable window
    - duration fits before `usable_end`
    - intervals do not overlap, with `min_rest_days_between_walks` between walks
-4. **Result** — `trip_fit: true` if all remaining tracks can be placed; otherwise `trip_fit: false` with reasons:
+4. **Result** — `trip_fit: true` if all remaining unconfirmed tracks can be placed; otherwise `trip_fit: false` with reasons:
 
 | Reason | Meaning |
 |--------|---------|
 | `outside_travel_window` | Candidate outside overall travel dates |
 | `overlaps_required_buffer` | Candidate intrudes on before/after buffers |
-| `insufficient_room_for_remaining_tracks` | No layout fits the other walks |
+| `conflicts_with_confirmed_booking` | Candidate overlaps a configured confirmed booking or rest gap |
+| `insufficient_room_for_remaining_tracks` | No layout fits the other unconfirmed walks |
 
-The evaluator tries all permutations of remaining tracks (typically 2–3 walks) and greedily assigns the earliest feasible start for each order.
+The evaluator tries all permutations of remaining unconfirmed tracks (typically 1–2 walks after bookings) and greedily assigns the earliest feasible start for each order.
+
+Confirmed bookings are fixed intervals loaded from configuration — see [bookings.md](bookings.md).
 
 ## Notifications
 

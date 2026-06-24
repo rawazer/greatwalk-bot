@@ -69,6 +69,16 @@ class Watcher:
             if self._shutdown.shutdown_requested:
                 break
 
+            if track_preference.confirmed_booking is not None:
+                booking = track_preference.confirmed_booking
+                logger.info(
+                    "Skipping %s: confirmed booking %s..%s",
+                    track_preference.slug,
+                    booking.start_date.isoformat(),
+                    booking.end_date.isoformat(),
+                )
+                continue
+
             track = self._get_track(track_preference.slug)
             bounds = track_preference.query_bounds(trip.travel_window)
 
