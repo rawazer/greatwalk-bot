@@ -2,9 +2,20 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from greatwalkbot.domain.trip import Trip
+
+
+@dataclass(frozen=True)
+class RetryConfig:
+    max_attempts: int = 3
+    base_delay_seconds: float = 1.0
+    max_delay_seconds: float = 60.0
+
+    def __post_init__(self) -> None:
+        if self.max_attempts < 1:
+            raise ValueError("retry.max_attempts must be at least 1")
 
 
 @dataclass(frozen=True)
@@ -14,6 +25,7 @@ class TripPlan:
     trip: Trip
     polling_interval_seconds: int
     source: str = "playwright"
+    retry: RetryConfig = field(default_factory=RetryConfig)
 
     def __post_init__(self) -> None:
         if self.polling_interval_seconds < 1:

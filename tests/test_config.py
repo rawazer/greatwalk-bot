@@ -135,6 +135,38 @@ tracks:
         load_watch_config(config_file)
 
 
+def test_load_retry_config(tmp_path: Path):
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        """
+polling_interval: 60
+trip:
+  name: Test
+party:
+  adults: 2
+travel_window:
+  start: 2026-12-01
+  end: 2026-12-31
+retry:
+  max_attempts: 5
+  base_delay_seconds: 2.0
+  max_delay_seconds: 120.0
+tracks:
+  - track: milford
+    preferred_start_dates:
+      - 2026-12-07
+    acceptable_start_range:
+      start: 2026-12-01
+      end: 2026-12-31
+""",
+        encoding="utf-8",
+    )
+
+    plan = load_watch_config(config_file)
+    assert plan.retry.max_attempts == 5
+    assert plan.retry.base_delay_seconds == 2.0
+
+
 def test_trip_preferred_outside_travel_window(tmp_path: Path):
     config_file = tmp_path / "config.yaml"
     config_file.write_text(

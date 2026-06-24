@@ -13,3 +13,7 @@ investigation_output/
 tmp_*.html
 tmp_*.js
 tmp_*.json
+
+# Runtime data (created by gwbot watch)
+logs/
+data/

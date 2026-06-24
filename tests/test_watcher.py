@@ -2,6 +2,8 @@
 
 from datetime import date
 
+import pytest
+
 from greatwalkbot.domain.dates import DateRange, TravelWindow
 from greatwalkbot.domain.party import Party
 from greatwalkbot.domain.plan import TripPlan
@@ -58,8 +60,9 @@ def _snapshot(status: AvailabilityStatus, spaces: int) -> AvailabilitySnapshot:
     )
 
 
-def test_watcher_notifies_only_once_for_same_availability():
-    logs: list[str] = []
+def test_watcher_notifies_only_once_for_same_availability(caplog):
+    caplog.set_level("INFO", logger="greatwalkbot")
+
     notifications: list[str] = []
 
     class RecordingNotifier(ConsoleNotifier):
@@ -77,7 +80,6 @@ def test_watcher_notifies_only_once_for_same_availability():
         source,
         RecordingNotifier(),
         resolve_track_fn=lambda slug: MILFORD,
-        logger=logs.append,
     )
 
     watcher.run_once()
@@ -85,6 +87,5 @@ def test_watcher_notifies_only_once_for_same_availability():
 
     assert source.calls == 2
     assert notifications == ["2026-12-07"]
-    assert any("[check]" in line for line in logs)
-    assert any("1 new" in line for line in logs)
-    assert any("0 new" in line for line in logs)
+    assert any("1 new" in record.message for record in caplog.records)
+    assert any("0 new" in record.message for record in caplog.records)

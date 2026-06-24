@@ -46,6 +46,12 @@ tracks:
       start: 2026-12-03
       end: 2026-12-23
 
+# Optional retry policy for transient fetch failures
+retry:
+  max_attempts: 3
+  base_delay_seconds: 1.0
+  max_delay_seconds: 60.0
+
 # Optional: data source (playwright or http). CLI --source overrides this.
 # source: playwright
 

@@ -2,28 +2,39 @@
 
 from __future__ import annotations
 
-import json
+import logging
 from datetime import date
 
-from playwright.sync_api import Page, Route, sync_playwright
+from playwright.sync_api import Page
 
-from greatwalkbot.constants import (
-    DEFAULT_USER_AGENT,
-    GREATWALK_HASH,
-    GW_FACILITY_PATH,
-    RDR_HOST,
-    SITE_URL,
-)
+from greatwalkbot.constants import GREATWALK_HASH, SITE_URL
+from greatwalkbot.infra.errors import FetchError, SessionError
+from greatwalkbot.infra.retry import RetryPolicy, is_retryable, retry_call
 from greatwalkbot.models import AvailabilitySnapshot, Track
 from greatwalkbot.parsing import build_gw_facility_request, parse_gw_facility_response
+from greatwalkbot.sources.session_manager import SessionManager
+
+logger = logging.getLogger(__name__)
 
 
 class PlaywrightAvailabilitySource:
     """Load the DOC SPA and capture the Great Walk facility grid API."""
 
-    def __init__(self, headless: bool = True, timeout_ms: int = 120_000) -> None:
+    def __init__(
+        self,
+        headless: bool = True,
+        timeout_ms: int = 120_000,
+        *,
+        session_manager: SessionManager | None = None,
+        retry_policy: RetryPolicy | None = None,
+        metrics: object | None = None,
+    ) -> None:
         self.headless = headless
         self.timeout_ms = timeout_ms
+        self._session = session_manager
+        self._retry_policy = retry_policy or RetryPolicy()
+        self._metrics = metrics
+        self._owns_session = session_manager is None
 
     def fetch_track_availability(
         self,
@@ -31,55 +42,78 @@ class PlaywrightAvailabilitySource:
         from_date: date,
         to_date: date,
     ) -> AvailabilitySnapshot:
-        payload: dict | None = None
-        request_body = build_gw_facility_request(track, from_date, to_date)
-
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=self.headless)
-            page = browser.new_page(
-                viewport={"width": 1400, "height": 900},
-                user_agent=DEFAULT_USER_AGENT,
+        created_session = False
+        if self._session is None:
+            self._session = SessionManager(
+                headless=self.headless,
+                timeout_ms=self.timeout_ms,
             )
+            self._session.start()
+            created_session = True
 
-            def on_response(response) -> None:
-                nonlocal payload
-                if GW_FACILITY_PATH not in response.url or response.status != 200:
-                    return
-                content_type = response.headers.get("content-type", "")
-                if "json" not in content_type:
-                    return
-                try:
-                    payload = response.json()
-                except json.JSONDecodeError:
-                    return
+        try:
+            return self._fetch_with_recovery(track, from_date, to_date)
+        finally:
+            if created_session and self._session is not None:
+                self._session.close()
+                self._session = None
 
-            def rewrite_facility_post(route: Route) -> None:
-                if route.request.method != "POST":
-                    route.continue_()
-                    return
-                headers = {
-                    **route.request.headers,
-                    "content-type": "application/json; charset=utf-8",
-                }
-                route.continue_(headers=headers, post_data=json.dumps(request_body))
+    def close(self) -> None:
+        if self._owns_session and self._session is not None:
+            self._session.close()
+            self._session = None
 
-            page.route(f"**/{GW_FACILITY_PATH}", rewrite_facility_post)
-            page.on("response", on_response)
+    def _fetch_with_recovery(
+        self,
+        track: Track,
+        from_date: date,
+        to_date: date,
+    ) -> AvailabilitySnapshot:
+        assert self._session is not None
+        try:
+            return retry_call(
+                lambda: self._fetch_once(track, from_date, to_date),
+                self._retry_policy,
+            )
+        except Exception as exc:
+            if not is_retryable(exc):
+                raise
+            logger.warning(
+                "Fetch failed after retries for %s; restarting browser session",
+                track.slug,
+            )
+            self._session.restart()
+            if self._metrics is not None and hasattr(self._metrics, "record_browser_restart"):
+                self._metrics.record_browser_restart()
+            return self._fetch_once(track, from_date, to_date)
 
-            page.goto(SITE_URL, wait_until="networkidle", timeout=self.timeout_ms)
-            page.wait_for_timeout(3000)
-            page.evaluate(f"window.location.hash = '{GREATWALK_HASH}'")
-            page.wait_for_timeout(8000)
+    def _fetch_once(
+        self,
+        track: Track,
+        from_date: date,
+        to_date: date,
+    ) -> AvailabilitySnapshot:
+        assert self._session is not None
+        if not self._session.is_healthy():
+            raise SessionError("Browser session is unhealthy")
 
-            self._select_track(page, track)
-            page.wait_for_timeout(2000)
-            self._click_search(page)
-            page.wait_for_timeout(15000)
+        request_body = build_gw_facility_request(track, from_date, to_date)
+        self._session.prepare_fetch(request_body)
+        page = self._session.page
 
-            browser.close()
+        page.goto(SITE_URL, wait_until="networkidle", timeout=self.timeout_ms)
+        page.wait_for_timeout(3000)
+        page.evaluate(f"window.location.hash = '{GREATWALK_HASH}'")
+        page.wait_for_timeout(8000)
 
+        self._select_track(page, track)
+        page.wait_for_timeout(2000)
+        self._click_search(page)
+        page.wait_for_timeout(15000)
+
+        payload = self._session.captured_payload()
         if payload is None:
-            raise RuntimeError(
+            raise FetchError(
                 "No availability data captured. AWS WAF may have blocked the session; "
                 "retry with --headed."
             )

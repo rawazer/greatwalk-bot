@@ -3,18 +3,31 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from datetime import date
 from pathlib import Path
 
 from greatwalkbot.config import load_watch_config
 from greatwalkbot.display import format_availability_table
+from greatwalkbot.infra.retry import RetryPolicy
+from greatwalkbot.infra.shutdown import ShutdownController
+from greatwalkbot.logging_config import configure_logging
+from greatwalkbot.monitoring.dedupe import SqliteSeenAvailabilityStore
+from greatwalkbot.monitoring.metrics import RuntimeMetrics
 from greatwalkbot.monitoring.watcher import Watcher
 from greatwalkbot.notifications.console import ConsoleNotifier
 from greatwalkbot.sources.http import HttpAvailabilitySource
 from greatwalkbot.sources.playwright import PlaywrightAvailabilitySource
 from greatwalkbot.sources.protocol import AvailabilitySource
+from greatwalkbot.sources.session_manager import SessionManager
 from greatwalkbot.tracks import resolve_track
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_LOG_DIR = Path("logs")
+DEFAULT_STATUS_FILE = DEFAULT_LOG_DIR / "status.json"
+DEFAULT_SEEN_DB = Path("data") / "seen.db"
 
 
 def _parse_date(value: str) -> date:
@@ -24,12 +37,23 @@ def _parse_date(value: str) -> date:
         raise argparse.ArgumentTypeError(f"Invalid date {value!r}; use YYYY-MM-DD") from exc
 
 
-def _build_source(name: str, headed: bool) -> AvailabilitySource:
-    if name == "playwright":
-        return PlaywrightAvailabilitySource(headless=not headed)
-    if name == "http":
-        return HttpAvailabilitySource()
-    raise ValueError(f"Unknown source {name!r}")
+def _build_http_source() -> HttpAvailabilitySource:
+    return HttpAvailabilitySource()
+
+
+def _build_playwright_source(
+    *,
+    headed: bool,
+    session_manager: SessionManager | None = None,
+    retry_policy: RetryPolicy | None = None,
+    metrics: RuntimeMetrics | None = None,
+) -> PlaywrightAvailabilitySource:
+    return PlaywrightAvailabilitySource(
+        headless=not headed,
+        session_manager=session_manager,
+        retry_policy=retry_policy,
+        metrics=metrics,
+    )
 
 
 def _cmd_check(args: argparse.Namespace) -> int:
@@ -38,27 +62,64 @@ def _cmd_check(args: argparse.Namespace) -> int:
         from_date = args.from_date
         to_date = args.to_date
         if to_date < from_date:
-            print("--to must be on or after --from", file=sys.stderr)
+            logger.error("--to must be on or after --from")
             return 1
 
-        source = _build_source(args.source, args.headed)
+        if args.source == "playwright":
+            source = _build_playwright_source(headed=args.headed)
+        else:
+            source = _build_http_source()
+
         snapshot = source.fetch_track_availability(track, from_date, to_date)
         print(format_availability_table(snapshot))
         return 0
     except (ValueError, RuntimeError) as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        logger.error("Error: %s", exc)
         return 1
 
 
 def _cmd_watch(args: argparse.Namespace) -> int:
+    seen_store: SqliteSeenAvailabilityStore | None = None
+    session_manager: SessionManager | None = None
+
     try:
-        config = load_watch_config(args.config)
-        source_name = args.source or config.source
-        source = _build_source(source_name, args.headed)
+        configure_logging(DEFAULT_LOG_DIR)
+        plan = load_watch_config(args.config)
+        source_name = args.source or plan.source
+        shutdown = ShutdownController()
+
+        metrics = RuntimeMetrics(
+            status_path=DEFAULT_STATUS_FILE,
+            trip_name=plan.trip.name,
+        )
+        metrics.flush()
+
+        seen_store = SqliteSeenAvailabilityStore(DEFAULT_SEEN_DB)
+        retry_policy = RetryPolicy(
+            max_attempts=plan.retry.max_attempts,
+            base_delay_seconds=plan.retry.base_delay_seconds,
+            max_delay_seconds=plan.retry.max_delay_seconds,
+        )
+
+        if source_name == "playwright":
+            session_manager = SessionManager(headless=not args.headed)
+            session_manager.start()
+            source: AvailabilitySource = _build_playwright_source(
+                headed=args.headed,
+                session_manager=session_manager,
+                retry_policy=retry_policy,
+                metrics=metrics,
+            )
+        else:
+            source = _build_http_source()
+
         watcher = Watcher(
-            config,
+            plan,
             source,
             ConsoleNotifier(),
+            seen_store=seen_store,
+            metrics=metrics,
+            shutdown=shutdown,
         )
 
         if args.once:
@@ -68,8 +129,36 @@ def _cmd_watch(args: argparse.Namespace) -> int:
         watcher.run_forever()
         return 0
     except (ValueError, RuntimeError, FileNotFoundError) as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        logger.error("Error: %s", exc)
         return 1
+    finally:
+        if session_manager is not None:
+            session_manager.close()
+        if seen_store is not None:
+            seen_store.close()
+        logging.shutdown()
+
+
+def _cmd_status(args: argparse.Namespace) -> int:
+    status_path = Path(args.status_file)
+    snapshot = RuntimeMetrics.load(status_path)
+    if snapshot is None:
+        print(
+            f"No status file found at {status_path}. Is the watcher running?",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(f"Trip: {snapshot.trip_name or 'unknown'}")
+    print(f"Started: {snapshot.started_at}")
+    print(f"Polls completed: {snapshot.polls_completed}")
+    print(f"Successful polls: {snapshot.successful_polls}")
+    print(f"Failed polls: {snapshot.failed_polls}")
+    print(f"Browser restarts: {snapshot.browser_restarts}")
+    print(f"Average poll duration: {snapshot.average_poll_duration_seconds:.1f}s")
+    print(f"Last poll: {snapshot.last_poll_at or 'never'}")
+    print(f"Last successful poll: {snapshot.last_successful_poll_at or 'never'}")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -113,7 +202,18 @@ def main(argv: list[str] | None = None) -> int:
     )
     watch.set_defaults(func=_cmd_watch)
 
+    status = subparsers.add_parser("status", help="Show watcher runtime metrics")
+    status.add_argument(
+        "--status-file",
+        type=Path,
+        default=DEFAULT_STATUS_FILE,
+        help=f"Path to status JSON (default: {DEFAULT_STATUS_FILE})",
+    )
+    status.set_defaults(func=_cmd_status)
+
     args = parser.parse_args(argv)
+    if args.command == "check":
+        configure_logging(None)
     return args.func(args)
 
 

@@ -2,7 +2,7 @@
 
 Open-source assistant for planning and monitoring New Zealand DOC Great Walk trips.
 
-**Status:** Milestone 3 — trip planning domain model.
+**Status:** Milestone 4 — production readiness.
 
 ## Quick start
 
@@ -18,6 +18,9 @@ uv run gwbot check --track milford --from 2026-12-07 --to 2026-12-14
 # Monitor a whole trip
 cp config.example.yaml config.yaml
 uv run gwbot watch config.yaml
+
+# Check runtime metrics (while watcher is running)
+uv run gwbot status
 ```
 
 Use `--headed` if AWS WAF blocks headless traffic. Use `gwbot watch config.yaml --once` for a single poll cycle.
@@ -49,6 +52,11 @@ tracks:
     acceptable_start_range:
       start: 2026-12-03
       end: 2026-12-23
+
+retry:
+  max_attempts: 3
+  base_delay_seconds: 1.0
+  max_delay_seconds: 60.0
 ```
 
 Each track defines:
@@ -63,17 +71,33 @@ The overall **travel_window** bounds when you are in the country. Track date ran
 
 The legacy `party_size` / `preferred` / `acceptable` format is still supported and is normalised into the trip model at load time.
 
+## Production features
+
+Watch mode is designed for unattended long-running use:
+
+| Feature | Details |
+|---------|---------|
+| **Session manager** | Reuses a single Playwright browser across poll cycles; restarts on failure |
+| **Retry policy** | Exponential backoff with jitter for transient errors; fail-fast for config errors |
+| **Structured logging** | Console output plus rotating log file at `logs/greatwalkbot.log` |
+| **Persistent dedupe** | SQLite store at `data/seen.db` survives restarts |
+| **Metrics** | Runtime stats written to `logs/status.json`; inspect with `gwbot status` |
+| **Graceful shutdown** | Ctrl+C finishes the current poll, closes the browser, and flushes state |
+
 ## Project layout
 
 ```
 greatwalkbot/
 ├── config.example.yaml
+├── logs/                  # runtime logs and status.json (created at watch time)
+├── data/                  # persistent dedupe database (created at watch time)
 ├── src/greatwalkbot/
 │   ├── domain/            # Trip, Party, TrackPreference, TravelWindow, ...
+│   ├── infra/             # Retry, shutdown, error types
 │   ├── config/            # YAML loading
-│   ├── monitoring/        # Matcher, dedupe, watch loop
+│   ├── monitoring/        # Matcher, dedupe, metrics, watch loop
 │   ├── notifications/     # Notifier interface
-│   └── sources/           # Playwright and HTTP backends
+│   └── sources/           # SessionManager, Playwright, HTTP
 └── tests/
 ```
 

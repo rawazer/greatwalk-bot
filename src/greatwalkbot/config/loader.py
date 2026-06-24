@@ -11,7 +11,7 @@ import yaml
 from greatwalkbot.domain.dates import DateRange, TravelWindow
 from greatwalkbot.domain.direction import DirectionPreference
 from greatwalkbot.domain.party import Party
-from greatwalkbot.domain.plan import TripPlan
+from greatwalkbot.domain.plan import RetryConfig, TripPlan
 from greatwalkbot.domain.track import TrackPreference
 from greatwalkbot.domain.trip import Trip
 from greatwalkbot.tracks import resolve_track
@@ -174,6 +174,47 @@ def _parse_trip_block(raw: dict[str, Any]) -> tuple[str, Party, TravelWindow]:
     return name.strip(), Party(adults=adults), travel_window
 
 
+def _parse_retry_config(raw: dict[str, Any]) -> RetryConfig:
+    retry_raw = raw.get("retry")
+    if retry_raw is None:
+        return RetryConfig()
+    if not isinstance(retry_raw, dict):
+        raise ValueError("retry must be a mapping")
+
+    max_attempts = retry_raw.get("max_attempts", 3)
+    if not isinstance(max_attempts, int):
+        raise ValueError("retry.max_attempts must be an integer")
+
+    base_delay = retry_raw.get("base_delay_seconds", 1.0)
+    if not isinstance(base_delay, (int, float)):
+        raise ValueError("retry.base_delay_seconds must be a number")
+
+    max_delay = retry_raw.get("max_delay_seconds", 60.0)
+    if not isinstance(max_delay, (int, float)):
+        raise ValueError("retry.max_delay_seconds must be a number")
+
+    return RetryConfig(
+        max_attempts=max_attempts,
+        base_delay_seconds=float(base_delay),
+        max_delay_seconds=float(max_delay),
+    )
+
+
+def _build_trip_plan(
+    raw: dict[str, Any],
+    *,
+    trip: Trip,
+    interval: int,
+    source: str,
+) -> TripPlan:
+    return TripPlan(
+        trip=trip,
+        polling_interval_seconds=interval,
+        source=source,
+        retry=_parse_retry_config(raw),
+    )
+
+
 def _load_trip_format(raw: dict[str, Any]) -> TripPlan:
     name, party, travel_window = _parse_trip_block(raw)
 
@@ -192,7 +233,7 @@ def _load_trip_format(raw: dict[str, Any]) -> TripPlan:
 
     source = raw.get("source", "playwright")
     trip = Trip(name=name, party=party, travel_window=travel_window, tracks=tracks)
-    return TripPlan(trip=trip, polling_interval_seconds=interval, source=source)
+    return _build_trip_plan(raw, trip=trip, interval=interval, source=source)
 
 
 def _load_legacy_format(raw: dict[str, Any]) -> TripPlan:
@@ -230,7 +271,7 @@ def _load_legacy_format(raw: dict[str, Any]) -> TripPlan:
         travel_window=travel_window,
         tracks=tracks,
     )
-    return TripPlan(trip=trip, polling_interval_seconds=interval, source=source)
+    return _build_trip_plan(raw, trip=trip, interval=interval, source=source)
 
 
 def load_watch_config(path: str | Path) -> TripPlan:
