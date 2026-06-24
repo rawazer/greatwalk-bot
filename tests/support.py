@@ -15,6 +15,9 @@ def make_itinerary(
     spaces: int = 5,
     facilities: tuple[str, ...] = ("Clinton Hut",),
     preference: str = "preferred",
+    complete_itinerary: bool = True,
+    party_size: int = 2,
+    direction: str | None = None,
     trip_fit: bool | None = None,
     trip_fit_reasons: tuple[str, ...] = (),
 ) -> AvailableItinerary:
@@ -29,6 +32,9 @@ def make_itinerary(
         spaces=spaces,
         facilities=facilities,
         preference=preference,
+        complete_itinerary=complete_itinerary,
+        party_size=party_size,
+        direction=direction,
         trip_fit=trip_fit,
         trip_fit_reasons=trip_fit_reasons,
     )

@@ -210,6 +210,47 @@ def _cmd_bookings(args: argparse.Namespace) -> int:
         return 1
 
 
+def _cmd_explain_availability(args: argparse.Namespace) -> int:
+    try:
+        configure_logging(None)
+        plan = load_watch_config(args.config)
+        track = resolve_track(args.track)
+        preference = next(
+            (pref for pref in plan.trip.tracks if pref.slug == track.slug),
+            None,
+        )
+        if preference is None:
+            logger.error("Track %r is not configured in %s", args.track, args.config)
+            return 1
+
+        if args.source == "playwright":
+            source = _build_playwright_source(headed=args.headed)
+        else:
+            source = _build_http_source()
+
+        target = args.date
+        snapshot = source.fetch_track_availability(track, target, target)
+        if snapshot.facility_index is None:
+            logger.error("Fetched snapshot has no facility index for validation")
+            return 1
+
+        from greatwalkbot.monitoring.itinerary_validation import validate_complete_itineraries
+        from greatwalkbot.explain_availability import format_explain_availability
+
+        results = validate_complete_itineraries(
+            index=snapshot.facility_index,
+            snapshot=snapshot,
+            preference=preference,
+            start_date=target,
+            party=plan.trip.party,
+        )
+        print(format_explain_availability(results))
+        return 0
+    except (ValueError, RuntimeError, FileNotFoundError) as exc:
+        logger.error("Error: %s", exc)
+        return 1
+
+
 def _cmd_notify_test(args: argparse.Namespace) -> int:
     try:
         configure_logging(None)
@@ -296,8 +337,28 @@ def main(argv: list[str] | None = None) -> int:
     bookings.add_argument("config", type=Path, help="Path to watch configuration YAML")
     bookings.set_defaults(func=_cmd_bookings)
 
+    explain = subparsers.add_parser(
+        "explain-availability",
+        help="Diagnose complete-itinerary validation for one start date",
+    )
+    explain.add_argument("config", type=Path, help="Path to watch configuration YAML")
+    explain.add_argument("--track", required=True, help="Track slug (e.g. milford)")
+    explain.add_argument("--date", type=_parse_date, required=True, help="Candidate start date")
+    explain.add_argument(
+        "--source",
+        choices=("playwright", "http"),
+        default="playwright",
+        help="Data source backend (default: playwright)",
+    )
+    explain.add_argument(
+        "--headed",
+        action="store_true",
+        help="Show browser window (may help if AWS WAF blocks headless traffic)",
+    )
+    explain.set_defaults(func=_cmd_explain_availability)
+
     args = parser.parse_args(argv)
-    if args.command in ("check", "notify-test", "plan-check", "bookings"):
+    if args.command in ("check", "notify-test", "plan-check", "bookings", "explain-availability"):
         configure_logging(None)
     return args.func(args)
 

@@ -1,0 +1,39 @@
+{
+  "GreatWalkFacilityHeaderData": [],
+  "GreatWalkFacilityData": [
+    {
+      "FacilityName": "Routeburn Falls Hut",
+      "GreatWalkFacilityDateData": [
+        {
+          "ArrivalDate": "2026-12-10T00:00:00",
+          "IsAvailable": true,
+          "IsSeasonAvailable": true,
+          "TotalAvailable": 4
+        },
+        {
+          "ArrivalDate": "2026-12-11T00:00:00",
+          "IsAvailable": false,
+          "IsSeasonAvailable": true,
+          "TotalAvailable": 0
+        }
+      ]
+    },
+    {
+      "FacilityName": "Lake Mackenzie Hut",
+      "GreatWalkFacilityDateData": [
+        {
+          "ArrivalDate": "2026-12-10T00:00:00",
+          "IsAvailable": false,
+          "IsSeasonAvailable": true,
+          "TotalAvailable": 0
+        },
+        {
+          "ArrivalDate": "2026-12-11T00:00:00",
+          "IsAvailable": true,
+          "IsSeasonAvailable": true,
+          "TotalAvailable": 5
+        }
+      ]
+    }
+  ]
+}

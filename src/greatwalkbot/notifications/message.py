@@ -9,13 +9,18 @@ DOC_BOOKING_URL = "https://bookings.doc.govt.nz/Web/"
 
 def format_itinerary_message(itinerary: AvailableItinerary, party_size: int) -> str:
     facilities = ", ".join(itinerary.facilities) if itinerary.facilities else "n/a"
+    adults = itinerary.party_size or party_size
     lines = [
         f"NEW {itinerary.preference}",
         f"{itinerary.track_name} starting {itinerary.start_date.isoformat()}",
         f"Ends {itinerary.end_date.isoformat()} ({itinerary.itinerary_nights} nights)",
-        f"Party: {party_size} | Available spaces: {itinerary.spaces}",
+        f"Complete itinerary verified for {adults} adult"
+        + ("s" if adults != 1 else ""),
+        f"Available spaces: {itinerary.spaces}",
         f"Facilities: {facilities}",
     ]
+    if itinerary.direction:
+        lines.append(f"Direction: {itinerary.direction}")
     if itinerary.trip_fit is True:
         lines.append("Fits current trip window with remaining walks.")
     lines.extend(

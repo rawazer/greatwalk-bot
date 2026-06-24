@@ -178,19 +178,19 @@ def test_disabled_trip_fit_preserves_matcher_behavior():
 
 
 def test_matcher_includes_end_date_and_nights():
+    import json
+    from pathlib import Path
+
     milford = Track("milford", "Milford Track", 873, 4, fixed_nights=3)
-    snapshot = AvailabilitySnapshot(
-        track=milford,
-        from_date=date(2026, 12, 7),
-        to_date=date(2026, 12, 7),
-        days=(
-            AvailabilityDay(
-                date(2026, 12, 7),
-                AvailabilityStatus.AVAILABLE,
-                5,
-                ("Clinton Hut",),
-            ),
-        ),
+    payload = json.loads(
+        (Path(__file__).parent / "fixtures" / "milford_complete.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    from greatwalkbot.parsing import parse_gw_facility_response
+
+    snapshot = parse_gw_facility_response(
+        payload, milford, date(2026, 12, 7), date(2026, 12, 9)
     )
     preference = TrackPreference(
         slug="milford",

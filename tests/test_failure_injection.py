@@ -22,7 +22,6 @@ from greatwalkbot.monitoring.models import AvailableItinerary
 from greatwalkbot.monitoring.watcher import Watcher
 from greatwalkbot.notifications.console import ConsoleNotifier
 from support import make_itinerary
-from support import make_itinerary
 from greatwalkbot.sources.playwright import PlaywrightAvailabilitySource
 
 MILFORD = Track("milford", "Milford Track", 873, 4, fixed_nights=3)

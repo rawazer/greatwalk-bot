@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from datetime import date
 from enum import Enum
 
+from greatwalkbot.facility_index import FacilityAvailabilityIndex
+
 
 class AvailabilityStatus(str, Enum):
     AVAILABLE = "available"
@@ -41,3 +43,4 @@ class AvailabilitySnapshot:
     from_date: date
     to_date: date
     days: tuple[AvailabilityDay, ...]
+    facility_index: FacilityAvailabilityIndex | None = None

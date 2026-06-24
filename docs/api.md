@@ -174,6 +174,8 @@ Search configuration and facility list for a selected Great Walk place.
 
 Facility availability for Great Walk place. JSON body includes `PlaceId`, `StartDate`, `NightCount`, `CustomerClassificationId`, `SeasonId`.
 
+See [itinerary-availability.md](itinerary-availability.md) for how GreatWalkBot validates complete itineraries from this response.
+
 #### `GET search/getgreatwalkfacilityinformation/facilityId/{facilityId}/startDate/{YYYY-MM-DD}`
 
 Facility metadata and restrictions for a start date.

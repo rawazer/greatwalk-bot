@@ -21,7 +21,9 @@ class SeenStore(Protocol):
     ) -> tuple[AvailableItinerary, ...]: ...
 
 
-def _dedupe_key(itinerary: AvailableItinerary) -> tuple[str, date, tuple[str, ...]]:
+def _dedupe_key(
+    itinerary: AvailableItinerary,
+) -> tuple[str, date, str | None, tuple[str, ...]]:
     return itinerary.dedupe_key
 
 
@@ -29,7 +31,7 @@ class SeenAvailabilityStore:
     """In-memory store of itineraries already notified."""
 
     def __init__(self) -> None:
-        self._seen: set[tuple[str, date, tuple[str, ...]]] = set()
+        self._seen: set[tuple[str, date, str | None, tuple[str, ...]]] = set()
 
     def is_new(self, itinerary: AvailableItinerary) -> bool:
         return _dedupe_key(itinerary) not in self._seen
@@ -53,9 +55,10 @@ class SqliteSeenAvailabilityStore:
         CREATE TABLE IF NOT EXISTS seen_itineraries (
             track_slug TEXT NOT NULL,
             start_date TEXT NOT NULL,
+            direction TEXT NOT NULL DEFAULT '',
             facilities TEXT NOT NULL,
             seen_at TEXT NOT NULL,
-            PRIMARY KEY (track_slug, start_date, facilities)
+            PRIMARY KEY (track_slug, start_date, direction, facilities)
         )
     """
 
@@ -65,7 +68,18 @@ class SqliteSeenAvailabilityStore:
         self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute(self._SCHEMA)
+        self._migrate_schema()
         self._conn.commit()
+
+    def _migrate_schema(self) -> None:
+        columns = {
+            row[1]
+            for row in self._conn.execute("PRAGMA table_info(seen_itineraries)")
+        }
+        if "direction" not in columns:
+            self._conn.execute(
+                "ALTER TABLE seen_itineraries ADD COLUMN direction TEXT NOT NULL DEFAULT ''"
+            )
 
     def close(self) -> None:
         self._conn.close()
@@ -75,9 +89,9 @@ class SqliteSeenAvailabilityStore:
         row = self._conn.execute(
             """
             SELECT 1 FROM seen_itineraries
-            WHERE track_slug = ? AND start_date = ? AND facilities = ?
+            WHERE track_slug = ? AND start_date = ? AND direction = ? AND facilities = ?
             """,
-            (key[0], key[1].isoformat(), json.dumps(list(key[2]))),
+            (key[0], key[1].isoformat(), key[2] or "", json.dumps(list(key[3]))),
         ).fetchone()
         return row is None
 
@@ -86,13 +100,14 @@ class SqliteSeenAvailabilityStore:
         self._conn.execute(
             """
             INSERT OR IGNORE INTO seen_itineraries
-            (track_slug, start_date, facilities, seen_at)
-            VALUES (?, ?, ?, ?)
+            (track_slug, start_date, direction, facilities, seen_at)
+            VALUES (?, ?, ?, ?, ?)
             """,
             (
                 key[0],
                 key[1].isoformat(),
-                json.dumps(list(key[2])),
+                key[2] or "",
+                json.dumps(list(key[3])),
                 datetime.now(timezone.utc).isoformat(),
             ),
         )

@@ -124,6 +124,18 @@ class Watcher:
             )
 
             for itinerary in new_matches:
+                if (
+                    track_preference.complete_itinerary_only
+                    and not itinerary.complete_itinerary
+                ):
+                    logger.info(
+                        "Suppressed unverified itinerary: %s starting %s",
+                        itinerary.track_name,
+                        itinerary.start_date.isoformat(),
+                    )
+                    self._seen.mark_seen(itinerary)
+                    continue
+
                 if self.plan.trip_fit.enabled and itinerary.trip_fit is False:
                     logger.info(
                         "Suppressed trip-fit mismatch: %s starting %s (%s)",

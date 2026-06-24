@@ -12,7 +12,20 @@ TripFitReason = Literal[
     "outside_travel_window",
     "insufficient_room_for_remaining_tracks",
     "overlaps_required_buffer",
+    "conflicts_with_confirmed_booking",
 ]
+
+
+@dataclass(frozen=True)
+class NightAvailabilitySummary:
+    """Per-night availability used to validate a complete itinerary."""
+
+    night_index: int
+    arrival_date: date
+    facility_name: str
+    spaces: int | None
+    party_size: int
+    satisfied: bool
 
 
 @dataclass(frozen=True)
@@ -27,13 +40,17 @@ class AvailableItinerary:
     spaces: int
     facilities: tuple[str, ...]
     preference: PreferenceLevel
-    complete_itinerary: bool = True
+    complete_itinerary: bool = False
+    party_size: int = 0
+    direction: str | None = None
+    night_summaries: tuple[NightAvailabilitySummary, ...] = ()
+    validation_notes: tuple[str, ...] = ()
     trip_fit: bool | None = None
     trip_fit_reasons: tuple[str, ...] = ()
 
     @property
-    def dedupe_key(self) -> tuple[str, date, tuple[str, ...]]:
-        return (self.track_slug, self.start_date, self.facilities)
+    def dedupe_key(self) -> tuple[str, date, str | None, tuple[str, ...]]:
+        return (self.track_slug, self.start_date, self.direction, self.facilities)
 
     def with_trip_fit(self, *, trip_fit: bool, reasons: tuple[str, ...] = ()) -> AvailableItinerary:
         return replace(self, trip_fit=trip_fit, trip_fit_reasons=reasons)

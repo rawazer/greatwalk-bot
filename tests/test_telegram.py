@@ -26,7 +26,8 @@ def test_itinerary_message_content():
     text = format_itinerary_message(_itinerary(), party_size=2)
     assert "NEW preferred" in text
     assert "Milford Track starting 2026-12-07" in text
-    assert "Party: 2 | Available spaces: 5" in text
+    assert "Complete itinerary verified for 2 adults" in text
+    assert "Available spaces: 5" in text
     assert "Clinton Hut" in text
     assert DOC_BOOKING_URL in text
     assert "confirm and book" in text

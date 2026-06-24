@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta
 from typing import Any
 
 from greatwalkbot.constants import LIMITED_AVAILABILITY_THRESHOLD
+from greatwalkbot.facility_index import build_facility_index
 from greatwalkbot.models import AvailabilityDay, AvailabilitySnapshot, AvailabilityStatus, Track
 
 
@@ -83,4 +84,5 @@ def parse_gw_facility_response(
         from_date=from_date,
         to_date=to_date,
         days=tuple(days),
+        facility_index=build_facility_index(payload, from_date=from_date, to_date=to_date),
     )
