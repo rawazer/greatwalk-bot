@@ -11,6 +11,7 @@ from pathlib import Path
 from greatwalkbot.monitoring.status import (
     STATUS_SCHEMA_VERSION,
     LastError,
+    LastNotificationError,
     RuntimeState,
     StatusSnapshot,
     atomic_write_json,
@@ -46,6 +47,9 @@ class RuntimeMetrics:
         self.last_poll_at: datetime | None = None
         self.last_successful_poll_at: datetime | None = None
         self._last_error: LastError | None = None
+        self.last_notification_attempt_at: datetime | None = None
+        self.last_successful_notification_at: datetime | None = None
+        self._last_notification_error: LastNotificationError | None = None
         self._lock = threading.Lock()
 
     def set_state(self, state: RuntimeState) -> None:
@@ -93,6 +97,27 @@ class RuntimeMetrics:
             self.browser_restarts += 1
         self.flush()
 
+    def record_notification_attempt(self) -> None:
+        with self._lock:
+            self.last_notification_attempt_at = _utc_now()
+        self.flush()
+
+    def record_notification_success(self) -> None:
+        with self._lock:
+            now = _utc_now()
+            self.last_notification_attempt_at = now
+            self.last_successful_notification_at = now
+        self.flush()
+
+    def record_notification_error(self, message: str) -> None:
+        with self._lock:
+            self.last_notification_attempt_at = _utc_now()
+            self._last_notification_error = LastNotificationError(
+                at=_iso(self.last_notification_attempt_at) or "",
+                message=message,
+            )
+        self.flush()
+
     def snapshot(self) -> StatusSnapshot:
         with self._lock:
             average = (
@@ -113,6 +138,9 @@ class RuntimeMetrics:
                 last_successful_poll_at=_iso(self.last_successful_poll_at),
                 trip_name=self.trip_name,
                 last_error=self._last_error,
+                last_notification_attempt_at=_iso(self.last_notification_attempt_at),
+                last_successful_notification_at=_iso(self.last_successful_notification_at),
+                last_notification_error=self._last_notification_error,
             )
 
     def flush(self) -> None:

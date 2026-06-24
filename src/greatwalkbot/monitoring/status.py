@@ -9,7 +9,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-STATUS_SCHEMA_VERSION = 1
+STATUS_SCHEMA_VERSION = 2
 
 
 class RuntimeState(str, Enum):
@@ -28,6 +28,12 @@ class LastError:
     track_slug: str | None = None
 
 
+@dataclass(frozen=True)
+class LastNotificationError:
+    at: str
+    message: str
+
+
 @dataclass
 class StatusSnapshot:
     """Documented JSON contract for logs/status.json."""
@@ -44,11 +50,16 @@ class StatusSnapshot:
     last_successful_poll_at: str | None = None
     trip_name: str | None = None
     last_error: LastError | None = None
+    last_notification_attempt_at: str | None = None
+    last_successful_notification_at: str | None = None
+    last_notification_error: LastNotificationError | None = None
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         if self.last_error is None:
             payload["last_error"] = None
+        if self.last_notification_error is None:
+            payload["last_notification_error"] = None
         return payload
 
 
@@ -60,6 +71,25 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     os.replace(temp_path, path)
 
 
+def _parse_last_error(raw: dict[str, Any] | None) -> LastError | None:
+    if not isinstance(raw, dict):
+        return None
+    return LastError(
+        at=str(raw["at"]),
+        message=str(raw["message"]),
+        track_slug=raw.get("track_slug"),
+    )
+
+
+def _parse_last_notification_error(raw: dict[str, Any] | None) -> LastNotificationError | None:
+    if not isinstance(raw, dict):
+        return None
+    return LastNotificationError(
+        at=str(raw["at"]),
+        message=str(raw["message"]),
+    )
+
+
 def load_status_snapshot(path: Path) -> StatusSnapshot | None:
     if not path.is_file():
         return None
@@ -67,14 +97,6 @@ def load_status_snapshot(path: Path) -> StatusSnapshot | None:
         raw = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
             return None
-        last_error_raw = raw.get("last_error")
-        last_error = None
-        if isinstance(last_error_raw, dict):
-            last_error = LastError(
-                at=str(last_error_raw["at"]),
-                message=str(last_error_raw["message"]),
-                track_slug=last_error_raw.get("track_slug"),
-            )
         return StatusSnapshot(
             schema_version=int(raw.get("schema_version", 1)),
             started_at=str(raw["started_at"]),
@@ -89,7 +111,12 @@ def load_status_snapshot(path: Path) -> StatusSnapshot | None:
             last_poll_at=raw.get("last_poll_at"),
             last_successful_poll_at=raw.get("last_successful_poll_at"),
             trip_name=raw.get("trip_name"),
-            last_error=last_error,
+            last_error=_parse_last_error(raw.get("last_error")),
+            last_notification_attempt_at=raw.get("last_notification_attempt_at"),
+            last_successful_notification_at=raw.get("last_successful_notification_at"),
+            last_notification_error=_parse_last_notification_error(
+                raw.get("last_notification_error")
+            ),
         )
     except (json.JSONDecodeError, KeyError, TypeError, ValueError):
         return None

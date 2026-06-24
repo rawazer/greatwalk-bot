@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from greatwalkbot.domain.notifications import NotificationConfig
 from greatwalkbot.domain.trip import Trip
 
 
@@ -26,6 +27,7 @@ class TripPlan:
     polling_interval_seconds: int
     source: str = "playwright"
     retry: RetryConfig = field(default_factory=RetryConfig)
+    notifications: NotificationConfig = field(default_factory=NotificationConfig)
 
     def __post_init__(self) -> None:
         if self.polling_interval_seconds < 1:

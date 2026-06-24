@@ -50,6 +50,38 @@ cp config.example.yaml config.yaml
 
 `config.yaml` is gitignored and must not be committed.
 
+### Optional: Telegram notifications
+
+See [telegram.md](telegram.md) for full setup. Enable in `config.yaml`:
+
+```yaml
+notifications:
+  console: true
+  telegram:
+    enabled: true
+    bot_token_env: GREATWALKBOT_TELEGRAM_BOT_TOKEN
+    chat_id_env: GREATWALKBOT_TELEGRAM_CHAT_ID
+```
+
+Store secrets outside the repo:
+
+```bash
+mkdir -p ~/.config/greatwalkbot
+chmod 700 ~/.config/greatwalkbot
+cat > ~/.config/greatwalkbot/env <<'EOF'
+GREATWALKBOT_TELEGRAM_BOT_TOKEN=your-bot-token
+GREATWALKBOT_TELEGRAM_CHAT_ID=your-chat-id
+EOF
+chmod 600 ~/.config/greatwalkbot/env
+```
+
+Test before starting the watcher:
+
+```bash
+set -a && source ~/.config/greatwalkbot/env && set +a
+uv run gwbot notify-test config.yaml
+```
+
 ## 4. One-shot health check
 
 Verify Playwright can reach DOC before starting the long-running watcher:
@@ -106,14 +138,17 @@ Enable lingering so the service survives logout (required on most servers):
 sudo loginctl enable-linger "$USER"
 ```
 
-### Custom paths
+### Custom paths and Telegram secrets
 
 Edit `WorkingDirectory` and `ExecStart` in the unit file:
 
 ```ini
 WorkingDirectory=/home/youruser/greatwalk-bot
 ExecStart=/home/youruser/.local/bin/uv run gwbot watch /home/youruser/greatwalk-bot/config.yaml
+EnvironmentFile=/home/youruser/.config/greatwalkbot/env
 ```
+
+Create the environment file outside the repository (`chmod 600`). systemd loads variables before starting `gwbot`; never put tokens in the unit file itself if it lives in a shared or version-controlled location.
 
 ## 7. View logs and status
 

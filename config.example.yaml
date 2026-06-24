@@ -52,6 +52,14 @@ retry:
   base_delay_seconds: 1.0
   max_delay_seconds: 60.0
 
+# Optional notifications (Telegram secrets via environment variables only)
+notifications:
+  console: true
+  telegram:
+    enabled: false
+    bot_token_env: GREATWALKBOT_TELEGRAM_BOT_TOKEN
+    chat_id_env: GREATWALKBOT_TELEGRAM_CHAT_ID
+
 # Optional: data source (playwright or http). CLI --source overrides this.
 # source: playwright
 

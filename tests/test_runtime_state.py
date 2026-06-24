@@ -50,6 +50,19 @@ def test_load_status_snapshot_rejects_invalid_json(tmp_path: Path):
     assert load_status_snapshot(status_path) is None
 
 
+def test_runtime_metrics_records_notification_health(tmp_path: Path):
+    status_path = tmp_path / "status.json"
+    metrics = RuntimeMetrics(status_path=status_path)
+    metrics.record_notification_attempt()
+    metrics.record_notification_error("delivery failed")
+
+    loaded = RuntimeMetrics.load(status_path)
+    assert loaded is not None
+    assert loaded.last_notification_attempt_at is not None
+    assert loaded.last_notification_error is not None
+    assert loaded.last_notification_error.message == "delivery failed"
+
+
 def test_runtime_metrics_state_transitions(tmp_path: Path):
     status_path = tmp_path / "status.json"
     metrics = RuntimeMetrics(status_path=status_path)

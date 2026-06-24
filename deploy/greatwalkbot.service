@@ -27,6 +27,8 @@ RestartSec=30
 #   logs/greatwalkbot.log
 #   logs/status.json
 #   data/seen.db
+# Telegram secrets (create outside repo; see docs/telegram.md)
+# EnvironmentFile=%h/.config/greatwalkbot/env
 Environment=PYTHONUNBUFFERED=1
 
 [Install]

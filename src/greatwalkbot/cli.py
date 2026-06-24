@@ -16,7 +16,8 @@ from greatwalkbot.logging_config import configure_logging
 from greatwalkbot.monitoring.dedupe import SqliteSeenAvailabilityStore
 from greatwalkbot.monitoring.metrics import RuntimeMetrics
 from greatwalkbot.monitoring.watcher import Watcher
-from greatwalkbot.notifications.console import ConsoleNotifier
+from greatwalkbot.notifications.errors import TelegramDeliveryError
+from greatwalkbot.notifications.factory import build_notifiers, send_test_notifications
 from greatwalkbot.sources.http import HttpAvailabilitySource
 from greatwalkbot.sources.playwright import PlaywrightAvailabilitySource
 from greatwalkbot.sources.protocol import AvailabilitySource
@@ -116,7 +117,7 @@ def _cmd_watch(args: argparse.Namespace) -> int:
         watcher = Watcher(
             plan,
             source,
-            ConsoleNotifier(),
+            build_notifiers(plan, metrics=metrics),
             seen_store=seen_store,
             metrics=metrics,
             shutdown=shutdown,
@@ -165,7 +166,31 @@ def _cmd_status(args: argparse.Namespace) -> int:
             f"(track={snapshot.last_error.track_slug or 'unknown'}, "
             f"at={snapshot.last_error.at})"
         )
+    print(f"Last notification attempt: {snapshot.last_notification_attempt_at or 'never'}")
+    print(
+        f"Last successful notification: {snapshot.last_successful_notification_at or 'never'}"
+    )
+    if snapshot.last_notification_error is not None:
+        print(
+            f"Last notification error: {snapshot.last_notification_error.message} "
+            f"(at={snapshot.last_notification_error.at})"
+        )
     return 0
+
+
+def _cmd_notify_test(args: argparse.Namespace) -> int:
+    try:
+        configure_logging(None)
+        plan = load_watch_config(args.config)
+        send_test_notifications(plan)
+        print("Test notification(s) sent successfully.")
+        return 0
+    except TelegramDeliveryError as exc:
+        logger.error("Telegram delivery failed: %s", exc)
+        return 1
+    except (ValueError, RuntimeError, FileNotFoundError) as exc:
+        logger.error("Error: %s", exc)
+        return 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -218,8 +243,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     status.set_defaults(func=_cmd_status)
 
+    notify_test = subparsers.add_parser(
+        "notify-test",
+        help="Send test notification(s) without contacting DOC",
+    )
+    notify_test.add_argument("config", type=Path, help="Path to watch configuration YAML")
+    notify_test.set_defaults(func=_cmd_notify_test)
+
     args = parser.parse_args(argv)
-    if args.command == "check":
+    if args.command in ("check", "notify-test"):
         configure_logging(None)
     return args.func(args)
 

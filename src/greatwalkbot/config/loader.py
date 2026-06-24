@@ -10,10 +10,12 @@ import yaml
 
 from greatwalkbot.domain.dates import DateRange, TravelWindow
 from greatwalkbot.domain.direction import DirectionPreference
+from greatwalkbot.domain.notifications import NotificationConfig, TelegramNotificationConfig
 from greatwalkbot.domain.party import Party
 from greatwalkbot.domain.plan import RetryConfig, TripPlan
 from greatwalkbot.domain.track import TrackPreference
 from greatwalkbot.domain.trip import Trip
+from greatwalkbot.notifications.factory import resolve_telegram_credentials
 from greatwalkbot.tracks import resolve_track
 
 
@@ -174,6 +176,45 @@ def _parse_trip_block(raw: dict[str, Any]) -> tuple[str, Party, TravelWindow]:
     return name.strip(), Party(adults=adults), travel_window
 
 
+def _parse_notifications_config(raw: dict[str, Any]) -> NotificationConfig:
+    notifications_raw = raw.get("notifications")
+    if notifications_raw is None:
+        return NotificationConfig()
+
+    if not isinstance(notifications_raw, dict):
+        raise ValueError("notifications must be a mapping")
+
+    console = notifications_raw.get("console", True)
+    if not isinstance(console, bool):
+        raise ValueError("notifications.console must be a boolean")
+
+    telegram_raw = notifications_raw.get("telegram")
+    if telegram_raw is None:
+        telegram = TelegramNotificationConfig()
+    else:
+        if not isinstance(telegram_raw, dict):
+            raise ValueError("notifications.telegram must be a mapping")
+        enabled = telegram_raw.get("enabled", False)
+        if not isinstance(enabled, bool):
+            raise ValueError("notifications.telegram.enabled must be a boolean")
+        bot_token_env = telegram_raw.get("bot_token_env", "GREATWALKBOT_TELEGRAM_BOT_TOKEN")
+        chat_id_env = telegram_raw.get("chat_id_env", "GREATWALKBOT_TELEGRAM_CHAT_ID")
+        if not isinstance(bot_token_env, str) or not bot_token_env:
+            raise ValueError("notifications.telegram.bot_token_env must be a non-empty string")
+        if not isinstance(chat_id_env, str) or not chat_id_env:
+            raise ValueError("notifications.telegram.chat_id_env must be a non-empty string")
+        telegram = TelegramNotificationConfig(
+            enabled=enabled,
+            bot_token_env=bot_token_env,
+            chat_id_env=chat_id_env,
+        )
+
+    config = NotificationConfig(console=console, telegram=telegram)
+    if telegram.enabled:
+        resolve_telegram_credentials(telegram)
+    return config
+
+
 def _parse_retry_config(raw: dict[str, Any]) -> RetryConfig:
     retry_raw = raw.get("retry")
     if retry_raw is None:
@@ -212,6 +253,7 @@ def _build_trip_plan(
         polling_interval_seconds=interval,
         source=source,
         retry=_parse_retry_config(raw),
+        notifications=_parse_notifications_config(raw),
     )
 
 

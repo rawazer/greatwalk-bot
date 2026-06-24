@@ -48,11 +48,11 @@ Exceptions logged via `logger.exception()` include stack traces in the file hand
 
 Atomic JSON snapshot of watcher health. Written via a temporary file + `os.replace()` so `gwbot status` never reads partial JSON.
 
-### Schema version 1
+### Schema version 2 (current)
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "started_at": "2026-06-20T12:00:00Z",
   "state": "sleeping",
   "trip_name": "New Zealand Honeymoon",
@@ -67,15 +67,20 @@ Atomic JSON snapshot of watcher health. Written via a temporary file + `os.repla
     "at": "2026-06-20T13:00:00Z",
     "message": "No availability data captured",
     "track_slug": "milford"
-  }
+  },
+  "last_notification_attempt_at": "2026-06-20T14:30:01Z",
+  "last_successful_notification_at": "2026-06-20T14:30:01Z",
+  "last_notification_error": null
 }
 ```
+
+Schema version 1 files (without notification fields) still load; missing notification fields default to `null`.
 
 ### Fields
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `schema_version` | integer | Status schema version (currently `1`) |
+| `schema_version` | integer | Status schema version (currently `2`) |
 | `started_at` | string | UTC ISO-8601 timestamp when this watcher process started |
 | `state` | string | Current lifecycle state (see below) |
 | `trip_name` | string \| null | Trip name from config |
@@ -87,6 +92,9 @@ Atomic JSON snapshot of watcher health. Written via a temporary file + `os.repla
 | `last_poll_at` | string \| null | UTC timestamp of most recent poll cycle end |
 | `last_successful_poll_at` | string \| null | UTC timestamp of most recent successful poll |
 | `last_error` | object \| null | Most recent per-track fetch error |
+| `last_notification_attempt_at` | string \| null | UTC timestamp of most recent notification attempt |
+| `last_successful_notification_at` | string \| null | UTC timestamp of most recent successful notification |
+| `last_notification_error` | object \| null | Most recent notification delivery error (no secrets) |
 
 ### `state` values
 
@@ -106,6 +114,13 @@ Atomic JSON snapshot of watcher health. Written via a temporary file + `os.repla
 | `at` | string | UTC ISO-8601 timestamp |
 | `message` | string | Error summary |
 | `track_slug` | string \| null | Track that failed, if known |
+
+### `last_notification_error` object
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `at` | string | UTC ISO-8601 timestamp |
+| `message` | string | Error summary (never includes tokens or chat IDs) |
 
 ---
 
