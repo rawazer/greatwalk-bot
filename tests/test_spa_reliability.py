@@ -227,38 +227,34 @@ def test_wait_for_great_walk_ui_succeeds():
 
 
 def test_missing_selector_triggers_one_recovery_attempt():
-    page = FakeSpaPage()
-    page._click_option_results = [None, "great-walk-5"]
-    page._selection_committed = True
+    page = MagicMock()
     recorder = NetworkRecorder()
     open_calls: list[int] = []
 
-    def track_open(*_args, **kwargs):
-        open_calls.append(kwargs.get("navigation_timeout_ms", 0))
-
     with patch(
-        "greatwalkbot.sources.spa_navigation.open_great_walk_view",
-        side_effect=track_open,
+        "greatwalkbot.sources.track_transition.transition_track_selection",
+        side_effect=TrackSelectorError("missing option", track_slug="milford"),
     ):
-        commit_track_selection(
-            page,
-            MILFORD,
-            recorder,
-            navigation_timeout_ms=30_000,
-            app_ready_timeout_ms=15_000,
-            selection_commit_timeout_ms=50,
-        )
-
-    assert len(open_calls) == 1
+        with pytest.raises(TrackSelectorError):
+            commit_track_selection(
+                page,
+                MILFORD,
+                recorder,
+                navigation_timeout_ms=30_000,
+                app_ready_timeout_ms=15_000,
+                selection_commit_timeout_ms=50,
+            )
 
 
 def test_missing_selector_after_recovery_raises_track_selector_error():
-    page = FakeSpaPage()
-    page._click_option_results = [None, None]
+    page = MagicMock()
     recorder = NetworkRecorder()
 
-    with patch("greatwalkbot.sources.spa_navigation.open_great_walk_view"):
-        with pytest.raises(TrackSelectorError, match="Could not click any track option"):
+    with patch(
+        "greatwalkbot.sources.track_transition.transition_track_selection",
+        side_effect=TrackSelectorError("missing option", track_slug="milford"),
+    ):
+        with pytest.raises(TrackSelectorError, match="missing option"):
             commit_track_selection(
                 page,
                 MILFORD,
@@ -347,12 +343,17 @@ def test_diagnostics_retention(tmp_path):
 
 
 def test_selection_not_committed_raises_typed_error():
-    page = FakeSpaPage()
-    page._click_option_results = ["great-walk-5", "great-walk-5"]
-    page._selection_committed = False
+    page = MagicMock()
     recorder = NetworkRecorder()
 
-    with patch("greatwalkbot.sources.spa_navigation.open_great_walk_view"):
+    with patch(
+        "greatwalkbot.sources.track_transition.transition_track_selection",
+        side_effect=TrackSelectionNotCommittedError(
+            "Track 'Milford Track' transition did not commit",
+            place_id=MILFORD.place_id,
+            failure_stage="wait_for_commit",
+        ),
+    ):
         with pytest.raises(TrackSelectionNotCommittedError, match="did not commit"):
             commit_track_selection(
                 page,

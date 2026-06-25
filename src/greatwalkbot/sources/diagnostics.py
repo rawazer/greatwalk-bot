@@ -229,6 +229,8 @@ def save_session_failure_diagnostics(
         summary["capture_lifecycle"] = getattr(error, "capture_lifecycle")
     if hasattr(error, "capture_diagnostics") and getattr(error, "capture_diagnostics", None):
         summary["capture_diagnostics"] = getattr(error, "capture_diagnostics")
+    if hasattr(error, "transition_diagnostics") and getattr(error, "transition_diagnostics", None):
+        summary["track_transition_diagnostics"] = getattr(error, "transition_diagnostics")
 
     screenshot_path: Path | None = None
     if page is not None:

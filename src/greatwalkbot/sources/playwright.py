@@ -14,7 +14,10 @@ from greatwalkbot.parsing import build_gw_facility_request, parse_gw_facility_re
 from greatwalkbot.sources.diagnostics import save_session_failure_diagnostics
 from greatwalkbot.sources.fetch_timing import TrackFetchTiming
 from greatwalkbot.sources.session_manager import SessionManager
-from greatwalkbot.sources.spa_navigation import bootstrap_great_walk_ui, commit_track_selection
+from greatwalkbot.sources.spa_navigation import (
+    ensure_great_walk_session_ready,
+    commit_track_selection,
+)
 from greatwalkbot.sources.spa_timing import (
     DEFAULT_APP_READY_TIMEOUT_MS,
     DEFAULT_CAPTURE_TIMEOUT_MS,
@@ -161,24 +164,31 @@ class PlaywrightAvailabilitySource:
         page = self._session.page
         browser_start_seconds = time.monotonic() - browser_started
 
-        stage_timing = bootstrap_great_walk_ui(
+        stage_timing = ensure_great_walk_session_ready(
             page,
             shell_timeout_ms=self.navigation_timeout_ms,
             spa_ready_timeout_ms=self.app_ready_timeout_ms,
             recorder=recorder,
             browser_start_seconds=browser_start_seconds,
+            full_bootstrap_required=self._session.needs_full_great_walk_bootstrap,
         )
+        if self._session.needs_full_great_walk_bootstrap:
+            self._session.mark_great_walk_bootstrapped()
 
         self._session.begin_capture_cycle(place_id=track.place_id)
 
-        commit_track_selection(
+        transition = commit_track_selection(
             page,
             track,
             recorder,
             navigation_timeout_ms=self.navigation_timeout_ms,
             app_ready_timeout_ms=self.app_ready_timeout_ms,
             selection_commit_timeout_ms=self.selection_commit_timeout_ms,
+            prior_track_slug=self._session.last_track_slug,
+            attempt=attempt,
+            session_restarted=session_restarted,
         )
+        self._session.record_track_transition(transition)
         self._session.mark_selection_committed()
 
         if has_itinerary_definition(track.slug):
@@ -214,6 +224,7 @@ class PlaywrightAvailabilitySource:
         )
 
         snapshot = parse_gw_facility_response(payload, track, from_date, to_date)
+        self._session.mark_track_completed(track.slug)
         return snapshot, timing
 
     def reset_poll_timings(self) -> None:

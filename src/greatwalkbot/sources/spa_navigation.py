@@ -384,6 +384,54 @@ def wait_for_track_selection_committed(
     return False
 
 
+def ensure_great_walk_session_ready(
+    page: SpaPage,
+    *,
+    site_url: str = SITE_URL,
+    greatwalk_hash: str = GREATWALK_HASH,
+    shell_timeout_ms: int,
+    spa_ready_timeout_ms: int,
+    recorder: NetworkRecorder | None = None,
+    browser_start_seconds: float = 0.0,
+    full_bootstrap_required: bool = True,
+) -> StageNavigationTiming:
+    """Navigate or refresh the Great Walk SPA without redundant full reloads."""
+    if full_bootstrap_required or not is_doc_booking_host(page.url):
+        return bootstrap_great_walk_ui(
+            page,
+            site_url=site_url,
+            greatwalk_hash=greatwalk_hash,
+            shell_timeout_ms=shell_timeout_ms,
+            spa_ready_timeout_ms=spa_ready_timeout_ms,
+            recorder=recorder,
+            browser_start_seconds=browser_start_seconds,
+        )
+
+    bootstrap_started = time.monotonic()
+    try:
+        ui_ready = bool(page.evaluate(_GREAT_WALK_UI_JS))
+    except Exception:
+        ui_ready = False
+
+    route_started = time.monotonic()
+    if greatwalk_hash not in (page.url or ""):
+        apply_great_walk_route(page, greatwalk_hash=greatwalk_hash)
+    route_elapsed = time.monotonic() - route_started
+
+    spa_started = time.monotonic()
+    if not ui_ready:
+        wait_for_great_walk_ui(page, timeout_ms=spa_ready_timeout_ms)
+    spa_elapsed = time.monotonic() - spa_started
+
+    return StageNavigationTiming(
+        browser_start_seconds=browser_start_seconds,
+        shell_navigation_seconds=0.0,
+        route_navigation_seconds=route_elapsed,
+        spa_readiness_seconds=spa_elapsed,
+        total_seconds=time.monotonic() - bootstrap_started + browser_start_seconds,
+    )
+
+
 def commit_track_selection(
     page: SpaPage,
     track: Track,
@@ -394,48 +442,26 @@ def commit_track_selection(
     navigation_timeout_ms: int,
     app_ready_timeout_ms: int,
     selection_commit_timeout_ms: int,
-) -> None:
-    """Open dropdown, select track, and wait until SPA commits the selection."""
-    for recovery in range(2):
-        if recovery == 1:
-            logger.warning(
-                "Track selection not committed for %s; attempting one view recovery",
-                track.slug,
-            )
-            open_great_walk_view(
-                page,
-                site_url=site_url,
-                greatwalk_hash=greatwalk_hash,
-                navigation_timeout_ms=navigation_timeout_ms,
-                app_ready_timeout_ms=app_ready_timeout_ms,
-                recorder=recorder,
-            )
+    prior_track_slug: str | None = None,
+    attempt: int = 1,
+    session_restarted: bool = False,
+) -> dict[str, Any]:
+    """Re-resolve desktop root, select track, and verify visible trigger."""
+    from greatwalkbot.sources.track_transition import transition_track_selection
 
-        open_track_dropdown(page)
-        clicked_id = click_track_option(page, track)
-        if clicked_id is None:
-            if recovery == 0:
-                continue
-            raise TrackSelectorError(
-                f"Could not click any track option for {track.name!r} "
-                f"(tried {track.dropdown_option_ids})",
-                track_slug=track.slug,
-                element_id=track.dropdown_element_id,
-            )
-
-        if wait_for_track_selection_committed(
-            page,
-            track,
-            recorder,
-            timeout_ms=selection_commit_timeout_ms,
-        ):
-            return
-
-    raise TrackSelectionNotCommittedError(
-        f"Track {track.name!r} option was clicked but selection did not commit "
-        f"within {selection_commit_timeout_ms}ms",
-        place_id=track.place_id,
+    del site_url, greatwalk_hash
+    diagnostics = transition_track_selection(
+        page,
+        track,
+        recorder,
+        navigation_timeout_ms=navigation_timeout_ms,
+        app_ready_timeout_ms=app_ready_timeout_ms,
+        selection_commit_timeout_ms=selection_commit_timeout_ms,
+        prior_track_slug=prior_track_slug,
+        attempt=attempt,
+        session_restarted=session_restarted,
     )
+    return diagnostics.to_dict()
 
 
 def click_search_button(page: SpaPage) -> None:

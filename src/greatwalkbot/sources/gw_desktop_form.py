@@ -1081,6 +1081,7 @@ def prepare_desktop_search_form(
 ) -> dict[str, Any]:
     """Fill and verify all desktop Great Walk controls before Search."""
     binding = resolve_desktop_great_walk_root(page)
+    binding, initial_root_refresh = refresh_desktop_root_binding(page, binding)
     state = read_desktop_form_state(
         page,
         binding,
@@ -1093,6 +1094,8 @@ def prepare_desktop_search_form(
 
     control_actions: dict[str, str] = {}
     root_change: dict[str, Any] | None = None
+    if initial_root_refresh.get("root_replaced"):
+        root_change = initial_root_refresh
     track_changed = False
 
     if state.get("track_control", {}).get("matches_requested"):

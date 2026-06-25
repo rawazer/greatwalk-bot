@@ -79,9 +79,26 @@ class TrackSelectorError(RetryableError):
 class TrackSelectionNotCommittedError(RetryableError):
     """Track option was clicked but SPA state did not commit the selection."""
 
-    def __init__(self, message: str, *, place_id: int | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        place_id: int | None = None,
+        transition_diagnostics: dict | None = None,
+        failure_stage: str | None = None,
+        requested_track_slug: str | None = None,
+        prior_track_slug: str | None = None,
+        attempt: int | None = None,
+        session_restarted: bool | None = None,
+    ) -> None:
         super().__init__(message)
         self.place_id = place_id
+        self.transition_diagnostics = transition_diagnostics
+        self.failure_stage = failure_stage
+        self.requested_track_slug = requested_track_slug
+        self.prior_track_slug = prior_track_slug
+        self.attempt = attempt
+        self.session_restarted = session_restarted
 
 
 class AvailabilityRequestNotObservedError(RetryableError):

@@ -10,7 +10,12 @@ from typing import Any
 from playwright.sync_api import Browser, Page, Playwright, Route, sync_playwright
 
 from greatwalkbot.constants import DEFAULT_USER_AGENT, GW_FACILITY_PATH
-from greatwalkbot.infra.errors import SessionError
+from greatwalkbot.infra.errors import (
+    AvailabilityRequestFailedError,
+    SearchFormValidationError,
+    SessionError,
+    TrackSelectionNotCommittedError,
+)
 from greatwalkbot.models import Track
 from greatwalkbot.sources.availability_capture import (
     CaptureLifecycle,
@@ -47,6 +52,21 @@ class SessionManager:
         self._console_handler: Any | None = None
         self._page_error_handler: Any | None = None
         self._facility_response_handler: Any | None = None
+        self._great_walk_bootstrapped = False
+        self._last_track_slug: str | None = None
+        self._last_track_transition: dict[str, Any] | None = None
+
+    @property
+    def last_track_slug(self) -> str | None:
+        return self._last_track_slug
+
+    @property
+    def last_track_transition(self) -> dict[str, Any] | None:
+        return self._last_track_transition
+
+    @property
+    def needs_full_great_walk_bootstrap(self) -> bool:
+        return not self._great_walk_bootstrapped
 
     @property
     def page(self) -> Page:
@@ -104,6 +124,18 @@ class SessionManager:
         self._console_handler = None
         self._page_error_handler = None
         self._facility_response_handler = None
+        self._great_walk_bootstrapped = False
+        self._last_track_slug = None
+        self._last_track_transition = None
+
+    def mark_great_walk_bootstrapped(self) -> None:
+        self._great_walk_bootstrapped = True
+
+    def mark_track_completed(self, track_slug: str) -> None:
+        self._last_track_slug = track_slug
+
+    def record_track_transition(self, transition: dict[str, Any] | None) -> None:
+        self._last_track_transition = transition
 
     def is_healthy(self) -> bool:
         if self._browser is None or self._page is None:
@@ -173,11 +205,18 @@ class SessionManager:
                 page_html = self._page.content()
             except Exception:
                 pass
-            from greatwalkbot.infra.errors import (
-                AvailabilityRequestFailedError,
-                SearchFormValidationError,
-            )
 
+            if isinstance(exc, SearchFormValidationError) and "track (expected" in str(exc):
+                raise TrackSelectionNotCommittedError(
+                    str(exc),
+                    place_id=track.place_id,
+                    transition_diagnostics=self._last_track_transition,
+                    failure_stage="visible_verification",
+                    requested_track_slug=track.slug,
+                    prior_track_slug=self._last_track_slug,
+                    attempt=attempt,
+                    session_restarted=session_restarted,
+                ) from exc
             if isinstance(exc, (AvailabilityRequestFailedError, SearchFormValidationError)):
                 if lifecycle is not None:
                     lifecycle.session_restarted = session_restarted
