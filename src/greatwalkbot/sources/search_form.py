@@ -151,6 +151,47 @@ def wait_for_search_click_transition(
     return None
 
 
+def prepare_great_walk_search(
+    page: SpaPage,
+    track: Track,
+    *,
+    start_date: date,
+    nights: int,
+    people_size: int,
+    form_ready_timeout_ms: int = DEFAULT_FORM_READY_TIMEOUT_MS,
+) -> dict[str, Any]:
+    """Fill desktop controls and verify visible values before registering capture waiter."""
+    del form_ready_timeout_ms
+    return prepare_search_form(
+        page,
+        track,
+        start_date=start_date,
+        nights=nights,
+        people_size=people_size,
+    )
+
+
+def dispatch_great_walk_search_click(
+    page: SpaPage,
+    recorder: NetworkRecorder,
+    track: Track,
+    *,
+    transition_timeout_ms: int = 3_000,
+    binding: Any | None = None,
+) -> str | None:
+    """Click Search after the capture waiter is registered; observe post-click transition."""
+    desktop_binding = binding or resolve_desktop_great_walk_root(page)
+    recorder.mark_search_submitted()
+    click_great_walk_search_button(page)
+    return wait_for_search_click_transition(
+        page,
+        recorder,
+        timeout_ms=transition_timeout_ms,
+        track=track,
+        binding=desktop_binding,
+    )
+
+
 def submit_great_walk_search(
     page: SpaPage,
     recorder: NetworkRecorder,
@@ -164,7 +205,7 @@ def submit_great_walk_search(
 ) -> dict[str, Any]:
     """Prepare desktop form, click Search, and verify an observable transition began."""
     binding = resolve_desktop_great_walk_root(page)
-    form_state = prepare_search_form(
+    form_state = prepare_great_walk_search(
         page,
         track,
         start_date=start_date,
@@ -172,13 +213,11 @@ def submit_great_walk_search(
         people_size=people_size,
         form_ready_timeout_ms=form_ready_timeout_ms,
     )
-    recorder.mark_search_submitted()
-    click_great_walk_search_button(page)
-    transition = wait_for_search_click_transition(
+    transition = dispatch_great_walk_search_click(
         page,
         recorder,
-        timeout_ms=transition_timeout_ms,
-        track=track,
+        track,
+        transition_timeout_ms=transition_timeout_ms,
         binding=binding,
     )
     return {

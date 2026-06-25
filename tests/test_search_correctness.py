@@ -17,6 +17,7 @@ from greatwalkbot.domain.plan import TripPlan
 from greatwalkbot.domain.track import TrackPreference
 from greatwalkbot.domain.trip import Trip
 from greatwalkbot.infra.errors import (
+    AvailabilityRequestFailedError,
     AvailabilitySearchNotDispatchedError,
     SearchFormValidationError,
     WafChallengeSuspectedError,
@@ -165,10 +166,13 @@ def test_capture_failure_classifies_undispatched_search():
     session._page = page
 
     with patch(
-        "greatwalkbot.sources.session_manager.submit_great_walk_search",
-        return_value={"search_click_transition": None},
+        "greatwalkbot.sources.session_manager.prepare_great_walk_search",
+        return_value={"search_button_enabled": True},
+    ), patch(
+        "greatwalkbot.sources.session_manager.dispatch_great_walk_search_click",
+        return_value=None,
     ):
-        with pytest.raises(AvailabilitySearchNotDispatchedError):
+        with pytest.raises(AvailabilityRequestFailedError):
             session.capture_availability_after_search(
                 track=ROUTEBURN,
                 start_date=date(2026, 12, 3),

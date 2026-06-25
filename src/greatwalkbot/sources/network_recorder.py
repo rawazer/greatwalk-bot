@@ -132,6 +132,8 @@ class NetworkRecorder:
         self._waf_signals: list[str] = []
         self._active_place_id: int | None = None
         self._search_submitted_order = 0
+        self._on_request_handler: Any | None = None
+        self._on_response_handler: Any | None = None
 
     def begin_cycle(self, *, place_id: int | None = None) -> None:
         self._events.clear()
@@ -155,8 +157,24 @@ class NetworkRecorder:
         return tuple(self._waf_signals)
 
     def attach(self, page: Any) -> None:
-        page.on("request", self._on_request)
-        page.on("response", self._on_response)
+        self._on_request_handler = self._on_request
+        self._on_response_handler = self._on_response
+        page.on("request", self._on_request_handler)
+        page.on("response", self._on_response_handler)
+
+    def detach(self, page: Any) -> None:
+        if self._on_request_handler is not None:
+            try:
+                page.remove_listener("request", self._on_request_handler)
+            except Exception:
+                pass
+        if self._on_response_handler is not None:
+            try:
+                page.remove_listener("response", self._on_response_handler)
+            except Exception:
+                pass
+        self._on_request_handler = None
+        self._on_response_handler = None
 
     def _append(
         self,
@@ -307,6 +325,27 @@ class NetworkRecorder:
             ):
                 return event
         return None
+
+    def saw_expected_facility_request_post_search(self) -> bool:
+        return any(
+            event.phase == "request"
+            and event.availability_match
+            and event.method.upper() == "POST"
+            and self._is_post_search(event)
+            for event in self._events
+        )
+
+    def saw_expected_facility_response_post_search(self) -> bool:
+        return any(
+            event.phase == "response"
+            and event.availability_match
+            and event.method.upper() == "POST"
+            and event.status == 200
+            and self._is_post_search(event)
+            and event.content_type is not None
+            and "json" in event.content_type.lower()
+            for event in self._events
+        )
 
     def post_search_timeline_dicts(self) -> list[dict[str, Any]]:
         return [

@@ -87,18 +87,37 @@ class TrackSelectionNotCommittedError(RetryableError):
 class AvailabilityRequestNotObservedError(RetryableError):
     """Expected availability request never appeared on the network timeline."""
 
-    def __init__(self, message: str, *, path: str | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        path: str | None = None,
+        capture_lifecycle: dict | None = None,
+        capture_diagnostics: dict | None = None,
+    ) -> None:
         super().__init__(message)
         self.path = path
+        self.capture_lifecycle = capture_lifecycle
+        self.capture_diagnostics = capture_diagnostics
 
 
 class AvailabilityRequestFailedError(RetryableError):
     """Availability request was observed but returned a non-success response."""
 
-    def __init__(self, message: str, *, path: str | None = None, status: int | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        path: str | None = None,
+        status: int | None = None,
+        capture_lifecycle: dict | None = None,
+        capture_diagnostics: dict | None = None,
+    ) -> None:
         super().__init__(message)
         self.path = path
         self.status = status
+        self.capture_lifecycle = capture_lifecycle
+        self.capture_diagnostics = capture_diagnostics
 
 
 class WafChallengeSuspectedError(RetryableError):

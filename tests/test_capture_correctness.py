@@ -5,11 +5,13 @@ from __future__ import annotations
 import json
 from contextlib import contextmanager
 from datetime import date
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from greatwalkbot.infra.errors import (
+    AvailabilityRequestFailedError,
     AvailabilityRequestNotObservedError,
     AvailabilitySearchNotDispatchedError,
     TrackSelectionNotCommittedError,
@@ -18,6 +20,7 @@ from greatwalkbot.infra.errors import (
 from greatwalkbot.models import Track
 from greatwalkbot.sources.availability_capture import (
     classify_capture_failure,
+    expected_greatwalk_facility_response,
     wait_for_availability_response,
 )
 from greatwalkbot.sources.diagnostics import save_session_failure_diagnostics
@@ -35,14 +38,23 @@ ROUTEBURN = Track("routeburn", "Routeburn Track", 874, 7, fixed_nights=2)
 
 
 class ImmediateResponse:
-    def __init__(self, payload: dict) -> None:
-        self.status = 200
+    def __init__(
+        self,
+        payload: dict,
+        *,
+        status: int = 200,
+        content_type: str = "application/json; charset=utf-8",
+        method: str = "POST",
+        url: str | None = None,
+    ) -> None:
+        self.status = status
         self._payload = payload
-        self.headers = {"content-type": "application/json; charset=utf-8"}
-        self.url = (
+        self.headers = {"content-type": content_type}
+        self.url = url or (
             "https://prod-nz-rdr.recreation-management.tylerapp.com/nzrdr/rdr/"
             "search/greatwalkplacefacility"
         )
+        self.request = MagicMock(method=method)
 
     def json(self) -> dict:
         return self._payload
@@ -73,6 +85,272 @@ def test_capture_listener_registered_before_click():
     assert click_order == ["listener_registered", "search_clicked"]
 
 
+def test_delayed_response_still_captured():
+    page = MagicMock()
+    payload = {"GreatWalkFacilityData": [{"FacilityName": "Mintaro Hut"}]}
+
+    @contextmanager
+    def delayed_expect(_predicate, timeout):
+        info = MagicMock()
+        yield info
+        info.value = ImmediateResponse(payload)
+
+    page.expect_response = delayed_expect
+
+    result, lifecycle = wait_for_availability_response(
+        page,
+        click_search=lambda: None,
+        timeout_ms=500,
+    )
+
+    assert result == payload
+    assert lifecycle.search_click_observed is True
+    assert lifecycle.expected_response_seen is True
+
+
+def test_wrong_post_search_response_rejected_by_predicate():
+    grid_response = ImmediateResponse(
+        {"rows": []},
+        url=(
+            "https://prod-nz-rdr.recreation-management.tylerapp.com/nzrdr/rdr/"
+            "search/grid"
+        ),
+    )
+    assert expected_greatwalk_facility_response(grid_response) is False
+
+    facility_response = ImmediateResponse({"GreatWalkFacilityData": []})
+    assert expected_greatwalk_facility_response(facility_response) is True
+
+
+def test_invalid_json_payload_raises_typed_capture_failure():
+    page = MagicMock()
+
+    @contextmanager
+    def fake_expect(_predicate, timeout):
+        info = MagicMock()
+        bad = ImmediateResponse({})
+        bad.json = MagicMock(side_effect=ValueError("not json"))
+        info.value = bad
+        yield info
+
+    page.expect_response = fake_expect
+    recorder = NetworkRecorder()
+    recorder.begin_cycle(place_id=MILFORD.place_id)
+
+    with pytest.raises(AvailabilityRequestFailedError) as exc_info:
+        wait_for_availability_response(
+            page,
+            click_search=lambda: None,
+            timeout_ms=500,
+            recorder=recorder,
+        )
+
+    err = exc_info.value
+    assert err.capture_lifecycle is not None
+    assert err.capture_lifecycle["capture_failure_stage"] == "read_json"
+    assert err.capture_diagnostics is not None
+    assert "post_search_network_timeline" in err.capture_diagnostics
+
+
+def test_invalid_payload_shape_raises_typed_capture_failure():
+    page = MagicMock()
+
+    @contextmanager
+    def fake_expect(_predicate, timeout):
+        info = MagicMock()
+        info.value = ImmediateResponse({"unexpected": True})
+        yield info
+
+    page.expect_response = fake_expect
+
+    with pytest.raises(AvailabilityRequestFailedError) as exc_info:
+        wait_for_availability_response(
+            page,
+            click_search=lambda: None,
+            timeout_ms=500,
+        )
+
+    assert exc_info.value.capture_lifecycle["capture_failure_stage"] == "validate_payload"
+
+
+def test_timeout_exits_waiter_cleanly_without_listener_keyerror():
+    page = MagicMock()
+    entered: list[str] = []
+    exited: list[str] = []
+
+    @contextmanager
+    def timeout_expect(_predicate, timeout):
+        entered.append("enter")
+        try:
+            raise TimeoutError("timed out waiting for response")
+            yield  # pragma: no cover
+        finally:
+            exited.append("exit")
+
+    page.expect_response = timeout_expect
+
+    with pytest.raises(AvailabilityRequestFailedError):
+        wait_for_availability_response(
+            page,
+            click_search=lambda: None,
+            timeout_ms=100,
+        )
+
+    assert entered == ["enter"]
+    assert exited == ["exit"]
+
+    session = SessionManager.__new__(SessionManager)
+    session._network = NetworkRecorder()
+    session._console_handler = None
+    session._page_error_handler = None
+    session._facility_response_handler = None
+    page.remove_listener = MagicMock()
+    page.unroute = MagicMock()
+    session._detach_page_handlers(page)
+    page.remove_listener.assert_not_called()
+
+
+def test_network_recorder_detach_is_idempotent():
+    page = MagicMock()
+    recorder = NetworkRecorder()
+    recorder.attach(page)
+    recorder.detach(page)
+    recorder.detach(page)
+    page.remove_listener.assert_called()
+
+
+def test_session_close_detaches_listeners_before_browser_close():
+    session = SessionManager.__new__(SessionManager)
+    page = MagicMock()
+    browser = MagicMock()
+    playwright = MagicMock()
+    session._page = page
+    session._browser = browser
+    session._playwright = playwright
+    session._network = NetworkRecorder()
+    session._network.attach(page)
+    session._console_handler = MagicMock()
+    session._page_error_handler = MagicMock()
+    session._facility_response_handler = MagicMock()
+
+    session.close()
+
+    page.remove_listener.assert_called()
+    page.unroute.assert_called_once()
+    browser.close.assert_called_once()
+    playwright.stop.assert_called_once()
+
+
+def test_playwright_retries_after_timeout_with_fresh_session():
+    from greatwalkbot.models import AvailabilitySnapshot
+    from greatwalkbot.sources.fetch_timing import TrackFetchTiming
+    from greatwalkbot.sources.playwright import PlaywrightAvailabilitySource
+
+    session = MagicMock()
+    session.is_healthy.return_value = True
+    ok_snapshot = AvailabilitySnapshot(
+        track=MILFORD,
+        from_date=date(2026, 12, 3),
+        to_date=date(2026, 12, 6),
+        days=(),
+    )
+    timing = TrackFetchTiming(
+        track_slug="milford",
+        navigation_seconds=0.0,
+        app_ready_seconds=0.0,
+        capture_seconds=0.0,
+        total_seconds=0.0,
+    )
+
+    source = PlaywrightAvailabilitySource(session_manager=session, people_size=2)
+    source._fetch_once = MagicMock(
+        side_effect=[
+            AvailabilityRequestFailedError(
+                "timeout",
+                capture_lifecycle={"attempt": 1},
+            ),
+            (ok_snapshot, timing),
+        ]
+    )
+
+    with patch("greatwalkbot.sources.playwright.save_session_failure_diagnostics"):
+        snapshot = source.fetch_track_availability(
+            MILFORD,
+            date(2026, 12, 3),
+            date(2026, 12, 6),
+        )
+
+    assert snapshot is ok_snapshot
+    assert source._fetch_once.call_count == 2
+    assert session.restart.call_count == 1
+
+
+def test_one_track_capture_failure_does_not_stop_watcher():
+    from greatwalkbot.domain.dates import DateRange, TravelWindow
+    from greatwalkbot.domain.party import Party
+    from greatwalkbot.domain.plan import TripPlan
+    from greatwalkbot.domain.track import TrackPreference
+    from greatwalkbot.domain.trip import Trip
+    from greatwalkbot.models import AvailabilitySnapshot
+    from greatwalkbot.monitoring.watcher import Watcher
+    from greatwalkbot.notifications.protocol import Notifier
+
+    class FailingThenOkSource:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def reset_poll_timings(self) -> None:
+            pass
+
+        def fetch_track_availability(self, track, from_date, to_date):
+            self.calls.append(track.slug)
+            if track.slug == "milford":
+                raise AvailabilityRequestFailedError("capture failed")
+            return AvailabilitySnapshot(
+                track=track,
+                from_date=from_date,
+                to_date=to_date,
+                days=(),
+            )
+
+    class SilentNotifier(Notifier):
+        def notify_new_availability(self, itinerary) -> None:
+            pass
+
+    plan = TripPlan(
+        trip=Trip(
+            name="Test",
+            party=Party(adults=2),
+            travel_window=TravelWindow(date(2026, 12, 1), date(2026, 12, 15)),
+            tracks=(
+                TrackPreference(
+                    slug="milford",
+                    acceptable_start_range=DateRange(date(2026, 12, 1), date(2026, 12, 15)),
+                    preferred_start_range=DateRange(date(2026, 12, 1), date(2026, 12, 15)),
+                ),
+                TrackPreference(
+                    slug="routeburn",
+                    acceptable_start_range=DateRange(date(2026, 12, 1), date(2026, 12, 15)),
+                    preferred_start_range=DateRange(date(2026, 12, 1), date(2026, 12, 15)),
+                ),
+                TrackPreference(
+                    slug="kepler",
+                    acceptable_start_range=DateRange(date(2026, 12, 1), date(2026, 12, 15)),
+                    preferred_start_range=DateRange(date(2026, 12, 1), date(2026, 12, 15)),
+                ),
+            ),
+        ),
+        polling_interval_seconds=300,
+    )
+    source = FailingThenOkSource()
+    watcher = Watcher(plan, source, SilentNotifier())
+    result = watcher.run_once()
+
+    assert source.calls == ["milford", "routeburn", "kepler"]
+    assert len(result.track_results) == 2
+    assert {item.track_slug for item in result.track_results} == {"routeburn", "kepler"}
+
+
 def test_response_emitted_during_click_is_captured():
     page = MagicMock()
     payload = {"GreatWalkFacilityData": [{"FacilityName": "Clinton Hut"}]}
@@ -85,7 +363,7 @@ def test_response_emitted_during_click_is_captured():
 
     page.expect_response = fake_expect_response
 
-    result = wait_for_availability_response(
+    result, _lifecycle = wait_for_availability_response(
         page,
         click_search=lambda: None,
         timeout_ms=500,
@@ -247,18 +525,10 @@ def test_capture_failure_after_search_uses_typed_error():
     session._captured_payload = None
     session._selection_committed = True
     session._current_request_body = {"placeId": MILFORD.place_id}
-    session._search_submitted = True
+    session._search_submitted = False
     session._last_form_state = {"search_button_enabled": True}
     session._network = NetworkRecorder()
     session._network.begin_cycle(place_id=MILFORD.place_id)
-    session._network._append(
-        phase="response",
-        method="GET",
-        path="search/getgreatwalksearchdata/placeId/{id}",
-        status=200,
-        content_type="application/json",
-        selection_metadata_match=True,
-    )
     page = MagicMock()
 
     @contextmanager
@@ -271,10 +541,13 @@ def test_capture_failure_after_search_uses_typed_error():
     session._page = page
 
     with patch(
-        "greatwalkbot.sources.session_manager.submit_great_walk_search",
-        return_value={"search_click_transition": None},
+        "greatwalkbot.sources.session_manager.prepare_great_walk_search",
+        return_value={"search_button_enabled": True},
+    ), patch(
+        "greatwalkbot.sources.session_manager.dispatch_great_walk_search_click",
+        return_value=None,
     ):
-        with pytest.raises(AvailabilitySearchNotDispatchedError):
+        with pytest.raises(AvailabilityRequestFailedError) as exc_info:
             session.capture_availability_after_search(
                 track=MILFORD,
                 start_date=date(2026, 12, 3),
@@ -282,3 +555,8 @@ def test_capture_failure_after_search_uses_typed_error():
                 people_size=2,
                 timeout_ms=100,
             )
+
+    err = exc_info.value
+    assert err.capture_lifecycle is not None
+    assert err.capture_lifecycle["capture_failure_stage"] == "wait_for_response"
+    assert err.capture_lifecycle["waiter_registered_before_search"] is True

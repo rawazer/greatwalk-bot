@@ -13,6 +13,7 @@ from greatwalkbot.constants import DEFAULT_USER_AGENT, GW_FACILITY_PATH
 from greatwalkbot.infra.errors import SessionError
 from greatwalkbot.models import Track
 from greatwalkbot.sources.availability_capture import (
+    CaptureLifecycle,
     classify_capture_failure,
     wait_for_availability_response,
 )
@@ -20,7 +21,10 @@ from greatwalkbot.sources.network_recorder import (
     NetworkRecorder,
     response_body_is_availability_payload,
 )
-from greatwalkbot.sources.search_form import submit_great_walk_search
+from greatwalkbot.sources.search_form import (
+    dispatch_great_walk_search_click,
+    prepare_great_walk_search,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +44,9 @@ class SessionManager:
         self._selection_committed = False
         self._search_submitted = False
         self._last_form_state: dict[str, Any] | None = None
+        self._console_handler: Any | None = None
+        self._page_error_handler: Any | None = None
+        self._facility_response_handler: Any | None = None
 
     @property
     def page(self) -> Page:
@@ -73,6 +80,8 @@ class SessionManager:
         self.start()
 
     def close(self) -> None:
+        if self._page is not None:
+            self._detach_page_handlers(self._page)
         if self._browser is not None:
             try:
                 self._browser.close()
@@ -92,6 +101,9 @@ class SessionManager:
         self._selection_committed = False
         self._search_submitted = False
         self._last_form_state = None
+        self._console_handler = None
+        self._page_error_handler = None
+        self._facility_response_handler = None
 
     def is_healthy(self) -> bool:
         if self._browser is None or self._page is None:
@@ -131,19 +143,27 @@ class SessionManager:
         nights: int,
         people_size: int,
         timeout_ms: int,
+        attempt: int = 1,
+        session_restarted: bool = False,
     ) -> dict:
-        """Prepare form, submit Search, and wait for post-search availability."""
+        """Prepare form, register response waiter, click Search, capture availability."""
         assert self._page is not None
+        lifecycle: CaptureLifecycle | None = None
         try:
-            payload = wait_for_availability_response(
+            self._last_form_state = prepare_great_walk_search(
                 self._page,
-                click_search=lambda: self._submit_search(
-                    track=track,
-                    start_date=start_date,
-                    nights=nights,
-                    people_size=people_size,
-                ),
+                track,
+                start_date=start_date,
+                nights=nights,
+                people_size=people_size,
+            )
+            payload, lifecycle = wait_for_availability_response(
+                self._page,
+                click_search=lambda: self._dispatch_search_click(track),
                 timeout_ms=timeout_ms,
+                recorder=self._network,
+                attempt=attempt,
+                session_restarted=session_restarted,
             )
             self._captured_payload = payload
             return payload
@@ -159,6 +179,12 @@ class SessionManager:
             )
 
             if isinstance(exc, (AvailabilityRequestFailedError, SearchFormValidationError)):
+                if lifecycle is not None:
+                    lifecycle.session_restarted = session_restarted
+                if isinstance(exc, AvailabilityRequestFailedError) and exc.capture_lifecycle is None:
+                    exc.capture_lifecycle = (
+                        lifecycle.to_dict() if lifecycle is not None else None
+                    )
                 raise
             raise classify_capture_failure(
                 self._network,
@@ -170,30 +196,49 @@ class SessionManager:
                 timeout_ms=timeout_ms,
                 page_html=page_html,
                 form_state=self._last_form_state,
+                capture_lifecycle=lifecycle,
+                attempt=attempt,
             ) from exc
 
-    def _submit_search(
-        self,
-        *,
-        track: Track,
-        start_date: date,
-        nights: int,
-        people_size: int,
-    ) -> None:
+    def _dispatch_search_click(self, track: Track) -> None:
         assert self._page is not None
-        self._last_form_state = submit_great_walk_search(
+        transition = dispatch_great_walk_search_click(
             self._page,
             self._network,
             track,
-            start_date=start_date,
-            nights=nights,
-            people_size=people_size,
         )
         self._search_submitted = True
+        if self._last_form_state is not None:
+            self._last_form_state = {
+                **self._last_form_state,
+                "search_click_transition": transition,
+            }
 
     def _ensure_started(self) -> None:
         if not self.is_healthy():
             raise SessionError("Browser session is not available")
+
+    def _detach_page_handlers(self, page: Page) -> None:
+        self._network.detach(page)
+        if self._console_handler is not None:
+            try:
+                page.remove_listener("console", self._console_handler)
+            except Exception:
+                pass
+        if self._page_error_handler is not None:
+            try:
+                page.remove_listener("pageerror", self._page_error_handler)
+            except Exception:
+                pass
+        if self._facility_response_handler is not None:
+            try:
+                page.remove_listener("response", self._facility_response_handler)
+            except Exception:
+                pass
+        try:
+            page.unroute(f"**/{GW_FACILITY_PATH}")
+        except Exception:
+            pass
 
     def _wire_page_handlers(self) -> None:
         assert self._page is not None
@@ -242,7 +287,11 @@ class SessionManager:
                 post_data=json.dumps(self._current_request_body),
             )
 
+        self._console_handler = on_console
+        self._page_error_handler = on_page_error
+        self._facility_response_handler = on_response
+
         self._page.route(f"**/{GW_FACILITY_PATH}", rewrite_facility_post)
-        page.on("console", on_console)
-        page.on("pageerror", on_page_error)
-        self._page.on("response", on_response)
+        page.on("console", self._console_handler)
+        page.on("pageerror", self._page_error_handler)
+        self._page.on("response", self._facility_response_handler)

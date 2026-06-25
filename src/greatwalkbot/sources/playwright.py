@@ -98,7 +98,13 @@ class PlaywrightAvailabilitySource:
 
         for attempt in range(1, MAX_FETCH_ATTEMPTS_PER_TRACK + 1):
             try:
-                snapshot, timing = self._fetch_once(track, from_date, to_date)
+                snapshot, timing = self._fetch_once(
+                    track,
+                    from_date,
+                    to_date,
+                    attempt=attempt,
+                    session_restarted=attempt > 1,
+                )
                 self.last_track_timing = timing
                 self.last_poll_track_timings = (*self.last_poll_track_timings, timing)
                 logger.info("Fetch timing: %s", timing.log_line())
@@ -138,6 +144,9 @@ class PlaywrightAvailabilitySource:
         track: Track,
         from_date: date,
         to_date: date,
+        *,
+        attempt: int = 1,
+        session_restarted: bool = False,
     ) -> tuple[AvailabilitySnapshot, TrackFetchTiming]:
         assert self._session is not None
         if not self._session.is_healthy():
@@ -184,6 +193,8 @@ class PlaywrightAvailabilitySource:
             nights=form_nights,
             people_size=self.people_size,
             timeout_ms=self.capture_timeout_ms,
+            attempt=attempt,
+            session_restarted=session_restarted,
         )
         capture_done = time.monotonic()
 

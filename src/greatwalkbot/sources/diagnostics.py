@@ -223,8 +223,12 @@ def save_session_failure_diagnostics(
         )
     if getattr(error, "shell_navigation_timed_out", False):
         summary["shell_navigation_timed_out"] = True
-    if getattr(error, "people_dropdown_diagnostics", None):
+    if hasattr(error, "people_dropdown_diagnostics") and getattr(error, "people_dropdown_diagnostics", None):
         summary["people_dropdown_diagnostics"] = getattr(error, "people_dropdown_diagnostics")
+    if hasattr(error, "capture_lifecycle") and getattr(error, "capture_lifecycle", None):
+        summary["capture_lifecycle"] = getattr(error, "capture_lifecycle")
+    if hasattr(error, "capture_diagnostics") and getattr(error, "capture_diagnostics", None):
+        summary["capture_diagnostics"] = getattr(error, "capture_diagnostics")
 
     screenshot_path: Path | None = None
     if page is not None:
