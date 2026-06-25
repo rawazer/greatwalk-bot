@@ -82,7 +82,13 @@ def path_is_selection_metadata(path: str, *, place_id: int | None = None) -> boo
         return False
     if place_id is None:
         return True
-    return f"placeid/{place_id}" in path.lower().replace("-", "")
+    normalized = path.lower().replace("-", "")
+    if f"placeid/{place_id}" in normalized:
+        return True
+    # Sanitized timeline paths redact numeric place-id segments.
+    if "placeid/{id}" in normalized:
+        return True
+    return False
 
 
 def path_is_post_search_candidate(path: str) -> bool:
@@ -228,8 +234,11 @@ class NetworkRecorder:
             return False
         return any(
             event.phase == "response"
-            and event.selection_metadata_match
             and event.status == 200
+            and (
+                event.selection_metadata_match
+                or SELECTION_METADATA_PATH in event.path.lower()
+            )
             for event in self._events
         )
 

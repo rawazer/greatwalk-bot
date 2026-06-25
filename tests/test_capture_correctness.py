@@ -107,6 +107,21 @@ def test_selection_visible_but_not_committed_classified():
     assert isinstance(error, TrackSelectionNotCommittedError)
 
 
+def test_sanitized_metadata_path_auto_match_confirms_selection():
+    recorder = NetworkRecorder()
+    recorder.begin_cycle(place_id=MILFORD.place_id)
+    recorder._append(
+        phase="response",
+        method="GET",
+        path="search/getgreatwalksearchdata/placeId/{id}",
+        status=200,
+        content_type="application/json",
+    )
+    event = recorder.events[-1]
+    assert event.selection_metadata_match is True
+    assert recorder.saw_selection_metadata(MILFORD.place_id)
+
+
 def test_candidate_discovery_distinguishes_kepler_from_milford_flow():
     kepler_recorder = NetworkRecorder()
     kepler_recorder.begin_cycle(place_id=KEPLER.place_id)

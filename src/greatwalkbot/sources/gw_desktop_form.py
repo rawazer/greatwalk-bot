@@ -6,7 +6,7 @@ import re
 import time
 from dataclasses import dataclass
 from datetime import date
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from greatwalkbot.infra.errors import (
     GreatWalkControlNotClickableError,
@@ -31,6 +31,8 @@ PEOPLE_LIST_SELECTOR = "#great-walk-people-dropdown-box"
 SEARCH_BUTTON_SELECTOR = 'button:has-text("Search")'
 
 LOADING_TEXT_RE = re.compile(r"fetching content|loading\.{0,3}|please wait", re.IGNORECASE)
+
+ControlActionOutcome = Literal["already_matched", "changed_and_verified", "change_failed"]
 
 _COUNT_RE = re.compile(r"(\d+)")
 
@@ -906,6 +908,126 @@ def wait_for_desktop_form_values(
     return last_state
 
 
+def _control_needs_change(state: dict[str, Any], control_key: str) -> bool:
+    return not bool(state.get(control_key, {}).get("matches_requested"))
+
+
+def _wait_for_first_needed_control_clickable(
+    page: DesktopFormPage,
+    binding: DesktopRootBinding,
+    state: dict[str, Any],
+    *,
+    root_change: dict[str, Any] | None = None,
+) -> None:
+    checks = (
+        ("start_date_control", DATE_BUTTON_SELECTOR, "start_date"),
+        ("nights_control", NIGHTS_BUTTON_SELECTOR, "nights"),
+        ("people_control", PEOPLE_BUTTON_SELECTOR, "people"),
+    )
+    for control_key, selector, control_name in checks:
+        if _control_needs_change(state, control_key):
+            wait_for_control_clickable(
+                page,
+                binding,
+                selector,
+                control_name,
+                root_change=root_change,
+            )
+            return
+
+
+def _verify_control_changed(
+    page: DesktopFormPage,
+    binding: DesktopRootBinding,
+    *,
+    track_name: str | None = None,
+    start_date: date | None = None,
+    nights: int | None = None,
+    people_size: int | None = None,
+    control_key: str,
+) -> bool:
+    state = read_desktop_form_state(
+        page,
+        binding,
+        track_name=track_name,
+        start_date=start_date,
+        nights=nights,
+        people_size=people_size,
+    )
+    return bool(state.get(control_key, {}).get("matches_requested"))
+
+
+def _ensure_desktop_date(
+    page: DesktopFormPage,
+    binding: DesktopRootBinding,
+    start_date: date,
+    state: dict[str, Any],
+    *,
+    root_change: dict[str, Any] | None = None,
+) -> ControlActionOutcome:
+    if not _control_needs_change(state, "start_date_control"):
+        return "already_matched"
+    try:
+        set_desktop_start_date(page, start_date, binding, root_change=root_change)
+    except GreatWalkDateControlDiscoveryIncompleteError:
+        raise
+    except GreatWalkControlNotFoundError as exc:
+        raise GreatWalkDateControlDiscoveryIncompleteError(
+            str(exc),
+            date_iso=start_date.isoformat(),
+        ) from exc
+    if _verify_control_changed(
+        page,
+        binding,
+        start_date=start_date,
+        control_key="start_date_control",
+    ):
+        return "changed_and_verified"
+    return "change_failed"
+
+
+def _ensure_desktop_nights(
+    page: DesktopFormPage,
+    binding: DesktopRootBinding,
+    nights: int,
+    state: dict[str, Any],
+    *,
+    root_change: dict[str, Any] | None = None,
+) -> ControlActionOutcome:
+    if not _control_needs_change(state, "nights_control"):
+        return "already_matched"
+    select_desktop_nights(page, nights, binding, root_change=root_change)
+    if _verify_control_changed(
+        page,
+        binding,
+        nights=nights,
+        control_key="nights_control",
+    ):
+        return "changed_and_verified"
+    return "change_failed"
+
+
+def _ensure_desktop_people(
+    page: DesktopFormPage,
+    binding: DesktopRootBinding,
+    people_size: int,
+    state: dict[str, Any],
+    *,
+    root_change: dict[str, Any] | None = None,
+) -> ControlActionOutcome:
+    if not _control_needs_change(state, "people_control"):
+        return "already_matched"
+    select_desktop_people(page, people_size, binding, root_change=root_change)
+    if _verify_control_changed(
+        page,
+        binding,
+        people_size=people_size,
+        control_key="people_control",
+    ):
+        return "changed_and_verified"
+    return "change_failed"
+
+
 def prepare_desktop_search_form(
     page: DesktopFormPage,
     track: Track,
@@ -926,10 +1048,28 @@ def prepare_desktop_search_form(
     )
     _raise_if_not_actionable(state, phase="before search")
 
+    control_actions: dict[str, str] = {}
     root_change: dict[str, Any] | None = None
-    if not state.get("track_control", {}).get("matches_requested"):
-        select_desktop_track(page, track, binding)
+    track_changed = False
+
+    if state.get("track_control", {}).get("matches_requested"):
+        control_actions["track"] = "already_matched"
+    else:
+        select_desktop_track(page, track, binding, root_change=root_change)
+        track_changed = True
         binding, root_change = refresh_desktop_root_binding(page, binding)
+        state = read_desktop_form_state(
+            page,
+            binding,
+            track_name=track.name,
+            start_date=start_date,
+            nights=nights,
+            people_size=people_size,
+        )
+        if state.get("track_control", {}).get("matches_requested"):
+            control_actions["track"] = "changed_and_verified"
+        else:
+            control_actions["track"] = "change_failed"
 
     binding, refresh_info = refresh_desktop_root_binding(page, binding)
     if root_change is None:
@@ -937,26 +1077,53 @@ def prepare_desktop_search_form(
     elif refresh_info.get("root_replaced"):
         root_change = {**root_change, **refresh_info}
 
-    wait_for_control_clickable(
+    if track_changed or refresh_info.get("root_replaced"):
+        _wait_for_first_needed_control_clickable(
+            page,
+            binding,
+            state,
+            root_change=root_change,
+        )
+
+    control_actions["date"] = _ensure_desktop_date(
         page,
         binding,
-        NIGHTS_BUTTON_SELECTOR,
-        "nights",
+        start_date,
+        state,
         root_change=root_change,
     )
+    state = read_desktop_form_state(
+        page,
+        binding,
+        track_name=track.name,
+        start_date=start_date,
+        nights=nights,
+        people_size=people_size,
+    )
 
-    select_desktop_nights(page, nights, binding, root_change=root_change)
-    select_desktop_people(page, people_size, binding, root_change=root_change)
+    control_actions["nights"] = _ensure_desktop_nights(
+        page,
+        binding,
+        nights,
+        state,
+        root_change=root_change,
+    )
+    state = read_desktop_form_state(
+        page,
+        binding,
+        track_name=track.name,
+        start_date=start_date,
+        nights=nights,
+        people_size=people_size,
+    )
 
-    try:
-        set_desktop_start_date(page, start_date, binding, root_change=root_change)
-    except GreatWalkDateControlDiscoveryIncompleteError:
-        raise
-    except GreatWalkControlNotFoundError as exc:
-        raise GreatWalkDateControlDiscoveryIncompleteError(
-            str(exc),
-            date_iso=start_date.isoformat(),
-        ) from exc
+    control_actions["people"] = _ensure_desktop_people(
+        page,
+        binding,
+        people_size,
+        state,
+        root_change=root_change,
+    )
 
     state = wait_for_desktop_form_values(
         page,
@@ -966,8 +1133,11 @@ def prepare_desktop_search_form(
         nights=nights,
         people_size=people_size,
     )
+    state["control_actions"] = control_actions
 
     failures: list[str] = []
+    if control_actions.get("track") == "change_failed":
+        failures.append(f"track (expected {track.name!r})")
     if not state.get("track_control", {}).get("matches_requested"):
         failures.append(f"track (expected {track.name!r})")
     if not state.get("nights_control", {}).get("matches_requested"):
