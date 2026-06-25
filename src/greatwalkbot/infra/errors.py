@@ -118,10 +118,12 @@ class SearchFormValidationError(RetryableError):
         *,
         form_state: dict | None = None,
         people_dropdown_diagnostics: dict | None = None,
+        nights_dropdown_diagnostics: dict | None = None,
     ) -> None:
         super().__init__(message)
         self.form_state = form_state
         self.people_dropdown_diagnostics = people_dropdown_diagnostics
+        self.nights_dropdown_diagnostics = nights_dropdown_diagnostics
 
 
 class GreatWalkPeopleDropdownError(RetryableError):
@@ -136,6 +138,40 @@ class GreatWalkPeopleDropdownError(RetryableError):
     ) -> None:
         super().__init__(message)
         self.people_dropdown_diagnostics = people_dropdown_diagnostics
+        self.form_state = form_state
+
+
+class GreatWalkNightsDropdownError(RetryableError):
+    """Desktop Nights dropdown could not be opened, resolved, or verified."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        nights_dropdown_diagnostics: dict | None = None,
+        form_state: dict | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.nights_dropdown_diagnostics = nights_dropdown_diagnostics
+        self.form_state = form_state
+
+
+class GreatWalkNightsTrackConstraintError(RetryableError):
+    """Nights control is track-controlled and does not match the requested value."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        requested_nights: int | None = None,
+        current_nights: int | None = None,
+        nights_dropdown_diagnostics: dict | None = None,
+        form_state: dict | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.requested_nights = requested_nights
+        self.current_nights = current_nights
+        self.nights_dropdown_diagnostics = nights_dropdown_diagnostics
         self.form_state = form_state
 
 

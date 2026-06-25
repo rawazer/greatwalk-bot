@@ -39,7 +39,7 @@ def _milford_live_state() -> dict:
             "class": "themeTopsearch selectedPark",
         },
         "track_control": {"visible_text": "Milford Track", "enabled": True},
-        "nights_control": {"visible_text": "3", "enabled": True},
+        "nights_control": {"visible_text": "3", "enabled": False, "aria_disabled": "true"},
         "people_control": {"visible_text": "1", "enabled": True},
         "start_date_control": {
             "visible_text": "26/06/2026",
@@ -142,7 +142,7 @@ def test_already_matching_track_does_not_reselect():
                 )
     track.assert_not_called()
     assert state["control_actions"]["track"] == "already_matched"
-    assert state["control_actions"]["nights"] == "already_matched"
+    assert state["control_actions"]["nights"] == "already_matched_track_controlled"
 
 
 def test_mismatched_people_and_date_are_still_acted_upon():

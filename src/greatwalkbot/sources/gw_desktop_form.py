@@ -15,6 +15,8 @@ from greatwalkbot.infra.errors import (
     GreatWalkDatePickerError,
     GreatWalkDateUnavailableError,
     GreatWalkDesktopRootError,
+    GreatWalkNightsDropdownError,
+    GreatWalkNightsTrackConstraintError,
     GreatWalkPeopleDropdownError,
     SearchFormValidationError,
 )
@@ -39,7 +41,12 @@ SEARCH_BUTTON_SELECTOR = 'button:has-text("Search")'
 
 LOADING_TEXT_RE = re.compile(r"fetching content|loading\.{0,3}|please wait", re.IGNORECASE)
 
-ControlActionOutcome = Literal["already_matched", "changed_and_verified", "change_failed"]
+ControlActionOutcome = Literal[
+    "already_matched",
+    "already_matched_track_controlled",
+    "changed_and_verified",
+    "change_failed",
+]
 
 _COUNT_RE = re.compile(r"(\d+)")
 
@@ -736,17 +743,16 @@ def select_desktop_nights(
     binding: DesktopRootBinding | None = None,
     *,
     root_change: dict[str, Any] | None = None,
-) -> None:
+) -> Any:
+    from greatwalkbot.sources.gw_desktop_nights_dropdown import select_desktop_nights as _select_desktop_nights
+
     binding = binding or resolve_desktop_great_walk_root(page)
-    click_desktop_control(
+    return _select_desktop_nights(
         page,
+        nights,
         binding,
-        NIGHTS_BUTTON_SELECTOR,
-        "nights",
         root_change=root_change,
     )
-    page.wait_for_timeout(200)
-    _click_dropdown_option(page, list_selector=NIGHTS_LIST_SELECTOR, match_number=nights)
 
 
 def select_desktop_people(
@@ -906,6 +912,7 @@ def _wait_for_first_needed_control_clickable(
     binding: DesktopRootBinding,
     state: dict[str, Any],
     *,
+    nights: int | None = None,
     root_change: dict[str, Any] | None = None,
 ) -> None:
     checks = (
@@ -914,15 +921,22 @@ def _wait_for_first_needed_control_clickable(
         ("people_control", PEOPLE_BUTTON_SELECTOR, "people"),
     )
     for control_key, selector, control_name in checks:
-        if _control_needs_change(state, control_key):
-            wait_for_control_clickable(
-                page,
-                binding,
-                selector,
-                control_name,
-                root_change=root_change,
-            )
-            return
+        if not _control_needs_change(state, control_key):
+            continue
+        if control_key == "nights_control" and nights is not None:
+            from greatwalkbot.sources.gw_desktop_nights_dropdown import inspect_nights_control
+
+            inspection = inspect_nights_control(page, binding, requested_nights=nights)
+            if not inspection.get("editable"):
+                continue
+        wait_for_control_clickable(
+            page,
+            binding,
+            selector,
+            control_name,
+            root_change=root_change,
+        )
+        return
 
 
 def _verify_control_changed(
@@ -993,8 +1007,29 @@ def _ensure_desktop_nights(
     root_change: dict[str, Any] | None = None,
 ) -> ControlActionOutcome:
     if not _control_needs_change(state, "nights_control"):
+        inspection = None
+        try:
+            from greatwalkbot.sources.gw_desktop_nights_dropdown import inspect_nights_control
+
+            inspection = inspect_nights_control(page, binding, requested_nights=nights)
+            if not inspection.get("editable"):
+                return "already_matched_track_controlled"
+        except Exception:
+            pass
         return "already_matched"
-    select_desktop_nights(page, nights, binding, root_change=root_change)
+    try:
+        result = select_desktop_nights(page, nights, binding, root_change=root_change)
+    except GreatWalkNightsTrackConstraintError:
+        raise
+    except GreatWalkNightsDropdownError:
+        raise
+    action = getattr(result, "action", None)
+    if action == "already_matched_track_controlled":
+        return "already_matched_track_controlled"
+    if action == "already_matched":
+        return "already_matched"
+    if action == "changed_and_verified":
+        return "changed_and_verified"
     if _verify_control_changed(
         page,
         binding,
@@ -1090,6 +1125,7 @@ def prepare_desktop_search_form(
             page,
             binding,
             state,
+            nights=nights,
             root_change=root_change,
         )
 
@@ -1113,13 +1149,19 @@ def prepare_desktop_search_form(
     if date_calendar_diag:
         state["date_calendar_diagnostics"] = date_calendar_diag
 
-    control_actions["nights"] = _ensure_desktop_nights(
-        page,
-        binding,
-        nights,
-        state,
-        root_change=root_change,
-    )
+    try:
+        control_actions["nights"] = _ensure_desktop_nights(
+            page,
+            binding,
+            nights,
+            state,
+            root_change=root_change,
+        )
+    except GreatWalkNightsTrackConstraintError:
+        raise
+    except GreatWalkNightsDropdownError as exc:
+        state["nights_dropdown_diagnostics"] = exc.nights_dropdown_diagnostics
+        raise
     state = read_desktop_form_state(
         page,
         binding,
@@ -1172,10 +1214,12 @@ def prepare_desktop_search_form(
                 form_state=state,
             )
         people_diag = state.get("people_dropdown_diagnostics")
+        nights_diag = state.get("nights_dropdown_diagnostics")
         raise SearchFormValidationError(
             "Desktop form values not verified: " + ", ".join(failures),
             form_state=state,
             people_dropdown_diagnostics=people_diag,
+            nights_dropdown_diagnostics=nights_diag,
         )
 
     _raise_if_not_actionable(state, phase="after setting form values")

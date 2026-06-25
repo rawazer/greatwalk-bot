@@ -175,11 +175,18 @@ def test_read_state_verifies_nights_and_people_counts():
     assert state["people_control"]["matches_requested"] is True
 
 
-def test_select_nights_and_people_use_desktop_root_locator():
+def test_select_nights_and_people_delegate_to_dropdown_modules():
     page = DesktopPage()
-    select_desktop_nights(page, 2)
-    select_desktop_people(page, 2)
-    assert DESKTOP_ROOT_SELECTOR in page._locators
+    with patch(
+        "greatwalkbot.sources.gw_desktop_nights_dropdown.select_desktop_nights"
+    ) as nights:
+        with patch(
+            "greatwalkbot.sources.gw_desktop_people_dropdown.select_desktop_people"
+        ) as people:
+            select_desktop_nights(page, 2)
+            select_desktop_people(page, 2)
+    nights.assert_called_once()
+    people.assert_called_once()
 
 
 def test_select_track_clicks_desktop_option_not_mobile():
