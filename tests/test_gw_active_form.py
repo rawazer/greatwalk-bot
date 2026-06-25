@@ -167,46 +167,28 @@ def test_selection_state_uses_same_active_root_and_metadata():
     assert state["visible_track_label"] == "Routeburn Track"
 
 
-def test_prepare_search_uses_active_root_scoped_setters():
+def test_prepare_search_delegates_to_desktop_form():
     page = ScriptedPage()
     with patch(
-        "greatwalkbot.sources.search_form.wait_for_active_form_ready",
-        return_value=(ACTIVE_RESOLUTION, READY_STATE),
-    ):
-        with patch("greatwalkbot.sources.search_form.set_active_start_date") as set_date:
-            with patch("greatwalkbot.sources.search_form.set_active_nights") as set_nights:
-                with patch(
-                    "greatwalkbot.sources.search_form.wait_for_active_form_values",
-                    return_value=READY_STATE,
-                ):
-                    with patch(
-                        "greatwalkbot.sources.search_form.inventory_active_form",
-                        return_value=[],
-                    ):
-                        state = prepare_search_form(
-                            page,
-                            ROUTEBURN,
-                            start_date=date(2026, 12, 3),
-                            nights=2,
-                        )
-    set_date.assert_called_once()
-    set_nights.assert_called_once()
-    assert state["nights_control"]["raw_value"] == "2"
+        "greatwalkbot.sources.search_form.prepare_desktop_search_form",
+        return_value=READY_STATE,
+    ) as prepare:
+        state = prepare_search_form(
+            page,
+            ROUTEBURN,
+            start_date=date(2026, 12, 3),
+            nights=2,
+            people_size=2,
+        )
+    prepare.assert_called_once()
+    assert state == READY_STATE
 
 
-def test_global_selector_cannot_satisfy_active_root_requirement():
+def test_desktop_root_loading_raises_form_not_ready():
     page = ScriptedPage()
-    loading_resolution = ActiveFormResolution(
-        candidate_count=2,
-        active_root={
-            "controls_found": {"track": True, "start_date": True, "nights": True, "search": True},
-            "loading_present": True,
-        },
-    )
-    loading_state = dict(READY_STATE, loading_present=True)
     with patch(
-        "greatwalkbot.sources.search_form.wait_for_active_form_ready",
-        side_effect=GreatWalkFormNotReadyError("still loading", form_state=loading_state),
+        "greatwalkbot.sources.search_form.prepare_desktop_search_form",
+        side_effect=GreatWalkFormNotReadyError("still loading", form_state=READY_STATE),
     ):
         with pytest.raises(GreatWalkFormNotReadyError):
             prepare_search_form(
@@ -214,8 +196,8 @@ def test_global_selector_cannot_satisfy_active_root_requirement():
                 MILFORD,
                 start_date=date(2026, 12, 7),
                 nights=3,
+                people_size=2,
             )
-    assert loading_resolution.active_root is not None
 
 
 def test_debug_inventory_bounded():

@@ -129,6 +129,7 @@ class SessionManager:
         track: Track,
         start_date: date,
         nights: int,
+        people_size: int,
         timeout_ms: int,
     ) -> dict:
         """Prepare form, submit Search, and wait for post-search availability."""
@@ -140,6 +141,7 @@ class SessionManager:
                     track=track,
                     start_date=start_date,
                     nights=nights,
+                    people_size=people_size,
                 ),
                 timeout_ms=timeout_ms,
             )
@@ -176,6 +178,7 @@ class SessionManager:
         track: Track,
         start_date: date,
         nights: int,
+        people_size: int,
     ) -> None:
         assert self._page is not None
         self._last_form_state = submit_great_walk_search(
@@ -184,6 +187,7 @@ class SessionManager:
             track,
             start_date=start_date,
             nights=nights,
+            people_size=people_size,
         )
         self._search_submitted = True
 

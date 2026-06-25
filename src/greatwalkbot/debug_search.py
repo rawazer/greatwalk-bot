@@ -10,18 +10,25 @@ from typing import Any
 from greatwalkbot.constants import GREATWALK_HASH
 from greatwalkbot.domain.plan import TripPlan
 from greatwalkbot.domain.track import TrackPreference
-from greatwalkbot.infra.errors import GreatWalkControlDiscoveryIncompleteError, RetryableError
+from greatwalkbot.infra.errors import (
+    GreatWalkDateControlDiscoveryIncompleteError,
+    RetryableError,
+)
 from greatwalkbot.inspect_greatwalk_dom import wait_for_selection_metadata
 from greatwalkbot.itinerary_form import resolve_form_nights
 from greatwalkbot.models import Track
 from greatwalkbot.parsing import build_gw_facility_request
-from greatwalkbot.sources.diagnostics import DiagnosticArtifacts, save_session_failure_diagnostics
-from greatwalkbot.sources.gw_active_form import (
-    capture_selection_state,
-    inventory_active_form,
-    resolve_active_great_walk_form,
+from greatwalkbot.sources.diagnostics import (
+    DiagnosticArtifacts,
+    save_dom_inspection_artifacts,
+    save_session_failure_diagnostics,
 )
-from greatwalkbot.sources.gw_control_gate import run_control_discovery_gate
+from greatwalkbot.sources.gw_desktop_form import (
+    capture_desktop_selection_state,
+    discover_date_picker_elements,
+    discover_desktop_dropdown_options,
+    resolve_desktop_great_walk_root,
+)
 from greatwalkbot.sources.search_form import capture_search_form_state, prepare_search_form
 from greatwalkbot.sources.session_manager import SessionManager
 from greatwalkbot.sources.spa_navigation import (
@@ -43,13 +50,12 @@ class DebugSearchReport:
     track_name: str
     start_date: date
     nights: int
+    people_size: int
     itinerary_direction: str | None
     selection_state: dict[str, Any] | None
     selection_committed: bool
-    control_discovery: dict[str, Any] | None
+    desktop_root: dict[str, Any] | None
     dom_diagnostic_path: str | None
-    active_form_resolution: dict[str, Any] | None
-    active_form_inventory: list[dict[str, Any]] | None
     form_state_before_search: dict[str, Any] | None
     search_outcome: dict[str, Any] | None
     network_timeline: list[dict[str, Any]]
@@ -62,7 +68,7 @@ class DebugSearchReport:
     def to_text(self) -> str:
         lines = [
             f"Track: {self.track_name} ({self.track_slug})",
-            f"Start date: {self.start_date.isoformat()}  Nights: {self.nights}",
+            f"Start date: {self.start_date.isoformat()}  Nights: {self.nights}  People: {self.people_size}",
         ]
         if self.itinerary_direction:
             lines.append(f"Itinerary direction: {self.itinerary_direction}")
@@ -70,8 +76,8 @@ class DebugSearchReport:
             [
                 f"Selection committed (automation): {self.selection_committed}",
                 "",
-                "Control discovery:",
-                json.dumps(self.control_discovery or {}, indent=2),
+                "Desktop root:",
+                json.dumps(self.desktop_root or {}, indent=2),
             ]
         )
         if self.dom_diagnostic_path:
@@ -79,14 +85,8 @@ class DebugSearchReport:
         lines.extend(
             [
                 "",
-                "Active form resolution:",
-                json.dumps(self.active_form_resolution or {}, indent=2),
-                "",
                 "Selection state:",
                 json.dumps(self.selection_state or {}, indent=2),
-                "",
-                "Active form inventory:",
-                json.dumps(self.active_form_inventory or [], indent=2),
                 "",
                 "Form state before Search:",
                 json.dumps(self.form_state_before_search or {}, indent=2),
@@ -98,11 +98,7 @@ class DebugSearchReport:
             ]
         )
         if self.error_type:
-            lines.extend(
-                [
-                    f"Error: {self.error_type}: {self.error_message}",
-                ]
-            )
+            lines.extend([f"Error: {self.error_type}: {self.error_message}"])
         lines.extend(
             [
                 "",
@@ -120,6 +116,38 @@ def _resolve_preference(plan: TripPlan, track_slug: str) -> TrackPreference:
     if preference is None:
         raise ValueError(f"Track {track_slug!r} is not configured in the trip plan")
     return preference
+
+
+def _save_date_picker_diagnostics(
+    page: Any,
+    *,
+    track: Track,
+    metadata_confirmed: bool,
+    network_timeline: list[dict[str, Any]],
+    form_state: dict[str, Any] | None = None,
+) -> DiagnosticArtifacts:
+    dropdowns = discover_desktop_dropdown_options(page) if page is not None else {}
+    date_picker = discover_date_picker_elements(page) if page is not None else []
+    summary: dict[str, Any] = {
+        "selection_metadata_confirmed": metadata_confirmed,
+        "desktop_dropdown_options": dropdowns,
+        "date_picker_elements": date_picker,
+        "form_state": form_state,
+        "notes": ["Date picker binding incomplete; review date_picker_elements"],
+    }
+    return save_dom_inspection_artifacts(
+        page=page,
+        track_name=track.name,
+        track_slug=track.slug,
+        dom_report={
+            "desktop_dropdown_options": dropdowns,
+            "date_picker_elements": date_picker,
+            "form_state": form_state,
+        },
+        discovery_summary=summary,
+        network_timeline=network_timeline,
+        prefix="debug-date",
+    )
 
 
 def run_debug_search(
@@ -153,16 +181,15 @@ def run_debug_search(
     if nights_override is not None:
         nights = nights_override
 
+    people_size = plan.trip.party.size
     to_date = start_date + timedelta(days=(bounds.end - bounds.start).days)
     request_body = build_gw_facility_request(track, start_date, to_date)
 
     session = SessionManager(headless=not headed)
     selection_state: dict[str, Any] | None = None
     selection_committed = False
-    control_discovery: dict[str, Any] | None = None
+    desktop_root: dict[str, Any] | None = None
     dom_diagnostic_path: str | None = None
-    active_form_resolution: dict[str, Any] | None = None
-    active_form_inventory: list[dict[str, Any]] | None = None
     form_state: dict[str, Any] | None = None
     search_outcome: dict[str, Any] | None = None
     diagnostics: DiagnosticArtifacts | None = None
@@ -198,43 +225,17 @@ def run_debug_search(
             track.place_id,
         ) or recorder.saw_selection_metadata(track.place_id)
 
-        timeline = recorder.timeline_dicts()
-        _, assessment, dom_artifacts = run_control_discovery_gate(
-            page,
-            track_name=track.name,
-            track_slug=track.slug,
-            selection_metadata_confirmed=metadata_confirmed,
-            network_timeline=timeline,
-            prefix="debug",
-        )
-        dom_diagnostic_path = str(dom_artifacts.directory)
-        control_discovery = {
-            "discovery_complete": assessment.complete,
-            "missing_controls": list(assessment.missing),
-            "found_controls": {
-                key: (value.get("suggested_locator") if value else None)
-                for key, value in assessment.found.items()
-            },
-            "form1_is_only_container": assessment.form1_is_only_container,
-            "notes": list(assessment.notes),
+        binding = resolve_desktop_great_walk_root(page)
+        desktop_root = {
+            "selector": binding.selector,
+            "count": binding.count,
+            "id": binding.root_id,
+            "class": binding.root_class,
         }
 
-        resolution = resolve_active_great_walk_form(page)
-        active_form_resolution = {
-            "candidate_count": resolution.candidate_count,
-            "active_root": resolution.active_root,
-            "rejected_candidates": resolution.rejected_candidates[:5],
-            "note": (
-                "Active root resolution is informational only; control binding "
-                "requires evidence from dom_report.json"
-            ),
-        }
-        active_form_inventory = inventory_active_form(page)
-
-        selection_state = capture_selection_state(
+        selection_state = capture_desktop_selection_state(
             page,
             track,
-            resolution,
             backend_metadata_confirmed=metadata_confirmed,
         )
         selection_committed = bool(
@@ -247,52 +248,52 @@ def run_debug_search(
             track=track,
             start_date=start_date,
             nights=nights,
-            resolution=resolution,
+            people_size=people_size,
+            binding=binding,
         )
         form_state = {
             **form_state,
             "selection": selection_state,
             "backend_metadata_confirmed": metadata_confirmed,
-            "dom_diagnostic_path": dom_diagnostic_path,
         }
 
-        prepare_search_form(
+        form_state = prepare_search_form(
             page,
             track,
             start_date=start_date,
             nights=nights,
+            people_size=people_size,
         )
+        form_state = {
+            **form_state,
+            "selection": selection_state,
+            "backend_metadata_confirmed": metadata_confirmed,
+        }
 
         session.capture_availability_after_search(
             track=track,
             start_date=start_date,
             nights=nights,
+            people_size=people_size,
             timeout_ms=capture_timeout_ms,
         )
         search_outcome = session.last_form_state
         result = "success"
-    except GreatWalkControlDiscoveryIncompleteError as exc:
+    except GreatWalkDateControlDiscoveryIncompleteError as exc:
         result = "failed"
         error_type = type(exc).__name__
         error_message = str(exc)
-        dom_diagnostic_path = exc.diagnostic_path or dom_diagnostic_path
-        if exc.assessment is not None:
-            assessment = exc.assessment
-            control_discovery = {
-                "discovery_complete": False,
-                "missing_controls": list(assessment.missing),
-                "found_controls": {
-                    key: (value.get("suggested_locator") if value else None)
-                    for key, value in assessment.found.items()
-                },
-                "form1_is_only_container": assessment.form1_is_only_container,
-                "notes": list(assessment.notes),
-            }
-        if metadata_confirmed and selection_state is not None:
-            selection_state = {
-                **selection_state,
-                "backend_metadata_confirmed": True,
-            }
+        form_state = getattr(exc, "form_state", None) or form_state
+        timeline = session.network.timeline_dicts() if session.is_healthy() else []
+        artifacts = _save_date_picker_diagnostics(
+            session.page if session.is_healthy() else None,
+            track=track,
+            metadata_confirmed=metadata_confirmed,
+            network_timeline=timeline,
+            form_state=form_state,
+        )
+        dom_diagnostic_path = str(artifacts.directory)
+        exc.diagnostic_path = dom_diagnostic_path  # type: ignore[attr-defined]
     except RetryableError as exc:
         result = "failed"
         error_type = type(exc).__name__
@@ -311,7 +312,6 @@ def run_debug_search(
             error=exc,
             network_timeline=session.network.timeline_dicts(),
             form_state=form_state,
-            active_form_inventory=active_form_inventory,
         )
     finally:
         network_timeline = session.network.timeline_dicts()
@@ -323,13 +323,12 @@ def run_debug_search(
         track_name=track.name,
         start_date=start_date,
         nights=nights,
+        people_size=people_size,
         itinerary_direction=direction,
         selection_state=selection_state,
         selection_committed=selection_committed,
-        control_discovery=control_discovery,
+        desktop_root=desktop_root,
         dom_diagnostic_path=dom_diagnostic_path,
-        active_form_resolution=active_form_resolution,
-        active_form_inventory=active_form_inventory,
         form_state_before_search=form_state,
         search_outcome=search_outcome,
         network_timeline=network_timeline,

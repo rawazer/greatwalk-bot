@@ -192,24 +192,19 @@ See [itinerary-availability.md](itinerary-availability.md) for how GreatWalkBot 
 
 ### Great Walk search form controls (June 2026)
 
-**Milestone 9.6 — evidence-driven discovery:** Do not assume a nested form root below ASP.NET `form1`. Use `gwbot inspect-greatwalk-dom --track <slug>` after track selection to capture a bounded `dom_report.json` under `logs/diagnostics/`. The report lists candidate elements (IDs, roles, semantic values, suggested locators, bounded ancestors) for track, date, nights, Search, and loading/validation indicators.
+**Milestone 9.7 — explicit desktop widget binding:** Production automation scopes all reads/writes to exactly one visible `div[role="search"].themeTopsearch:visible` inside `#facilitysearch > form#form1`. The ASP.NET `form1` wrapper is expected; it is not the control root. Mobile duplicates (`*-mobile`) are ignored on desktop/headless runs.
 
-`debug-search` gates on `run_control_discovery_gate`: if required controls are not identified from live DOM evidence, it raises `GreatWalkControlDiscoveryIncompleteError` with the diagnostic path and does **not** submit Search.
+| Control | Desktop locator (within widget root) | Interaction |
+|---------|--------------------------------------|-------------|
+| Track | `#great-walk-dropdown-button` → option in `#great-walk-dropdown-box` | Custom dropdown (`#great-walk-{n}`) |
+| Start date | `#great-walk-start-date` | React date-picker (not `#arrivaldate` unless evidenced) |
+| Nights | `#great-walk-night-dropdown-button` → `#great-walk-night-dropdown-box` | Custom dropdown by night count |
+| People | `#great-walk-people-dropdown-button` → `#great-walk-people-dropdown-box` | Custom dropdown by party size |
+| Search | `button:has-text("Search")` | Scoped to desktop root only |
 
-Earlier active-root scoring (`resolve_active_great_walk_form`) remains informational only; `form1` is excluded as a Great Walk widget container unless it contains GW descendants.
+**Errors:** `GreatWalkDesktopRootError` (not exactly one visible root), `GreatWalkDateControlDiscoveryIncompleteError` (date-picker binding unknown — run `inspect-greatwalk-dom --open-date-picker`).
 
-| Control | Discovery terms / patterns | Semantic value |
-|---------|---------------------------|----------------|
-| Track | dropdown/combobox with great/walk/place | `visible_text` label |
-| Start date | input/hidden/button with date/start/arrival | ISO `YYYY-MM-DD` from `.value` or `data-date` |
-| Nights | visible `<select>` with night in id/name | `select.value` |
-| Search | button with Search text or great-walk search id | enabled + visible |
-
-**Loading vs validation:** Text such as `Fetching Content...` is loading state, not validation. Validation is read only from `[role="alert"]`, `.invalid-feedback`, `.field-validation-error`.
-
-**Diagnostics:** `inspect-greatwalk-dom` and failed `debug-search` write `dom_report.json` (≤80 candidates, ≤40 visible controls) plus `summary.json` and screenshot. Optional `--headed --pause-seconds N` (max 300) keeps the browser open for manual DevTools inspection.
-
-**Selection reporting:** Backend metadata (`getgreatwalksearchdata` 200) is recorded independently of DOM control discovery.
+**Diagnostics:** `inspect-greatwalk-dom` reports `desktop_root`, `desktop_dropdown_options` (track/nights/people), and optional `date_picker_elements` with `--open-date-picker`. `debug-search` verifies track, date, nights, and people on visible desktop controls before Search.
 
 #### `GET search/getgreatwalkfacilityinformation/facilityId/{facilityId}/startDate/{YYYY-MM-DD}`
 

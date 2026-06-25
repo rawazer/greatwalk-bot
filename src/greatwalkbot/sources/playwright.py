@@ -50,6 +50,7 @@ class PlaywrightAvailabilitySource:
         selection_commit_timeout_ms: int = DEFAULT_SELECTION_COMMIT_TIMEOUT_MS,
         session_manager: SessionManager | None = None,
         metrics: object | None = None,
+        people_size: int = 2,
     ) -> None:
         self.headless = headless
         self.navigation_timeout_ms = navigation_timeout_ms
@@ -59,6 +60,7 @@ class PlaywrightAvailabilitySource:
         self._session = session_manager
         self._metrics = metrics
         self._owns_session = session_manager is None
+        self.people_size = people_size
         self.last_track_timing: TrackFetchTiming | None = None
         self.last_poll_track_timings: tuple[TrackFetchTiming, ...] = ()
 
@@ -182,6 +184,7 @@ class PlaywrightAvailabilitySource:
             track=track,
             start_date=from_date,
             nights=form_nights,
+            people_size=self.people_size,
             timeout_ms=self.capture_timeout_ms,
         )
         capture_done = time.monotonic()

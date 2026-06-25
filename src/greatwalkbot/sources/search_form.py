@@ -7,28 +7,24 @@ from datetime import date
 from typing import Any, Protocol
 
 from greatwalkbot.infra.errors import (
-    GreatWalkControlNotFoundError,
     GreatWalkFormNotReadyError,
     SearchFormValidationError,
     UIReadinessError,
 )
 from greatwalkbot.models import Track
-from greatwalkbot.sources.gw_active_form import (
-    _require_controls,
-    click_active_search_button,
-    inventory_active_form,
-    read_active_form_state,
-    resolve_active_great_walk_form,
-    set_active_nights,
-    set_active_start_date,
-    wait_for_active_form_ready,
-    wait_for_active_form_values,
+from greatwalkbot.sources.gw_desktop_form import (
+    click_desktop_search_button,
+    prepare_desktop_search_form,
+    read_desktop_form_state,
+    resolve_desktop_great_walk_root,
 )
 from greatwalkbot.sources.network_recorder import NetworkRecorder
 from greatwalkbot.sources.spa_timing import DEFAULT_FORM_READY_TIMEOUT_MS
 
 _RESULTS_VISIBLE_JS = """() => {
-    const root = document.querySelector('[data-gwbot-active-root="1"]') || document;
+    const root = Array.from(document.querySelectorAll('div[role="search"]'))
+        .find(el => (el.className || '').toString().includes('themeTopsearch')
+            && el.getBoundingClientRect().width > 0) || document;
     const selectors = [
         '[id*="great-walk"][id*="result"]',
         '[id*="great-walk"][id*="grid"]',
@@ -59,32 +55,32 @@ def capture_search_form_state(
     track: Track | None = None,
     start_date: date | None = None,
     nights: int | None = None,
-    resolution: Any | None = None,
+    people_size: int | None = None,
+    binding: Any | None = None,
 ) -> dict[str, Any]:
-    """Return sanitized semantic control state scoped to the active form root."""
-    active_resolution = resolution or resolve_active_great_walk_form(page)
-    state = read_active_form_state(
+    """Return sanitized semantic control state scoped to the desktop widget root."""
+    desktop_binding = binding or resolve_desktop_great_walk_root(page)
+    state = read_desktop_form_state(
         page,
-        active_resolution,
+        desktop_binding,
         track_name=track.name if track else None,
         start_date=start_date,
         nights=nights,
+        people_size=people_size,
     )
-    inventory = inventory_active_form(page)
     return {
         key: value
         for key, value in state.items()
         if key not in ("validation_messages",)
     } | {
         "validation_messages": list(state.get("validation_messages") or [])[:5],
-        "active_form_inventory": inventory,
     }
 
 
 def _raise_if_not_actionable(state: dict[str, Any], *, phase: str) -> None:
     if state.get("loading_present"):
         raise GreatWalkFormNotReadyError(
-            f"Active Great Walk form still loading {phase}",
+            f"Desktop Great Walk widget still loading {phase}",
             form_state=state,
         )
     if state.get("validation_messages"):
@@ -105,66 +101,22 @@ def prepare_search_form(
     *,
     start_date: date,
     nights: int,
+    people_size: int,
     form_ready_timeout_ms: int = DEFAULT_FORM_READY_TIMEOUT_MS,
 ) -> dict[str, Any]:
-    """Wait for active form, fill controls, and verify semantic values."""
-    resolution, ready_state = wait_for_active_form_ready(
+    """Fill desktop controls and verify visible values before Search."""
+    del form_ready_timeout_ms  # desktop binding is explicit; no root-scoring wait
+    return prepare_desktop_search_form(
         page,
-        timeout_ms=form_ready_timeout_ms,
-    )
-    _require_controls(ready_state, resolution)
-
-    state = capture_search_form_state(
-        page,
-        track=track,
+        track,
         start_date=start_date,
         nights=nights,
-        resolution=resolution,
+        people_size=people_size,
     )
-    _raise_if_not_actionable(state, phase="before search")
-
-    try:
-        set_active_start_date(page, start_date)
-        set_active_nights(page, nights)
-    except GreatWalkControlNotFoundError as exc:
-        raise GreatWalkControlNotFoundError(
-            str(exc),
-            control=exc.control,
-            form_state=capture_search_form_state(
-                page, track=track, start_date=start_date, nights=nights, resolution=resolution
-            ),
-        ) from exc
-
-    state = wait_for_active_form_values(
-        page,
-        resolution,
-        track_name=track.name,
-        start_date=start_date,
-        nights=nights,
-    )
-    state["active_form_inventory"] = inventory_active_form(page)
-
-    if not state.get("start_date_control", {}).get("matches_requested"):
-        raise SearchFormValidationError(
-            f"Start date not reflected in active form control "
-            f"(expected {start_date.isoformat()})",
-            form_state=state,
-        )
-    if not state.get("nights_control", {}).get("matches_requested"):
-        raise SearchFormValidationError(
-            f"Nights not reflected in active form select value (expected {nights})",
-            form_state=state,
-        )
-
-    _raise_if_not_actionable(state, phase="after setting form values")
-    return state
 
 
 def click_great_walk_search_button(page: SpaPage) -> None:
-    if not click_active_search_button(page):
-        raise UIReadinessError(
-            "Could not click an enabled Great Walk Search button in active form root"
-        )
+    click_desktop_search_button(page)
 
 
 def wait_for_search_click_transition(
@@ -173,10 +125,10 @@ def wait_for_search_click_transition(
     *,
     timeout_ms: int,
     track: Track | None = None,
-    resolution: Any | None = None,
+    binding: Any | None = None,
 ) -> str | None:
     """Wait for an observable post-click transition (not a fixed sleep)."""
-    active_resolution = resolution or resolve_active_great_walk_form(page)
+    desktop_binding = binding or resolve_desktop_great_walk_root(page)
     deadline = time.monotonic() + (timeout_ms / 1000.0)
     while time.monotonic() < deadline:
         if recorder.saw_post_search_activity():
@@ -184,7 +136,7 @@ def wait_for_search_click_transition(
         state = capture_search_form_state(
             page,
             track=track,
-            resolution=active_resolution,
+            binding=desktop_binding,
         )
         if state.get("loading_present"):
             return "loading"
@@ -206,16 +158,18 @@ def submit_great_walk_search(
     *,
     start_date: date,
     nights: int,
+    people_size: int,
     transition_timeout_ms: int = 3_000,
     form_ready_timeout_ms: int = DEFAULT_FORM_READY_TIMEOUT_MS,
 ) -> dict[str, Any]:
-    """Prepare active form, click Search, and verify an observable transition began."""
-    resolution = resolve_active_great_walk_form(page)
+    """Prepare desktop form, click Search, and verify an observable transition began."""
+    binding = resolve_desktop_great_walk_root(page)
     form_state = prepare_search_form(
         page,
         track,
         start_date=start_date,
         nights=nights,
+        people_size=people_size,
         form_ready_timeout_ms=form_ready_timeout_ms,
     )
     recorder.mark_search_submitted()
@@ -225,7 +179,7 @@ def submit_great_walk_search(
         recorder,
         timeout_ms=transition_timeout_ms,
         track=track,
-        resolution=resolution,
+        binding=binding,
     )
     return {
         **form_state,

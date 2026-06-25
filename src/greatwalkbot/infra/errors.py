@@ -119,6 +119,31 @@ class GreatWalkControlNotFoundError(RetryableError):
         self.form_state = form_state
 
 
+class GreatWalkDesktopRootError(RetryableError):
+    """Desktop Great Walk search widget root is missing or ambiguous."""
+
+    def __init__(self, message: str, *, root_count: int | None = None) -> None:
+        super().__init__(message)
+        self.root_count = root_count
+
+
+class GreatWalkDateControlDiscoveryIncompleteError(RetryableError):
+    """Desktop React date-picker binding is not established from live evidence."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        date_iso: str | None = None,
+        diagnostic_path: str | Path | None = None,
+        form_state: dict | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.date_iso = date_iso
+        self.diagnostic_path = str(diagnostic_path) if diagnostic_path else None
+        self.form_state = form_state
+
+
 class GreatWalkControlDiscoveryIncompleteError(RetryableError):
     """Live DOM inspection did not identify all required Great Walk controls."""
 

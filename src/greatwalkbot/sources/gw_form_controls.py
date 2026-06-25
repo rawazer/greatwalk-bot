@@ -1,36 +1,33 @@
-"""DOC Great Walk search form — delegates to active-root scoped discovery."""
+"""DOC Great Walk search form — delegates to desktop widget binding."""
 
 from __future__ import annotations
 
 from datetime import date
 from typing import Any
 
-from greatwalkbot.sources.gw_active_form import (
-    ACTIVE_ROOT_SELECTOR,
-    capture_selection_state,
-    click_active_search_button,
-    inventory_active_form,
-    normalize_date_string,
-    read_active_form_state,
-    resolve_active_great_walk_form,
-    set_active_nights,
-    set_active_start_date,
-    wait_for_active_form_ready,
-    wait_for_active_form_values,
+from greatwalkbot.sources.gw_desktop_form import (
+    DESKTOP_ROOT_SELECTOR,
+    DATE_BUTTON_SELECTOR,
+    NIGHTS_BUTTON_SELECTOR,
+    PEOPLE_BUTTON_SELECTOR,
+    TRACK_BUTTON_SELECTOR,
+    TRACK_LIST_SELECTOR,
+    capture_desktop_selection_state,
+    read_desktop_form_state,
+    resolve_desktop_great_walk_root,
+    select_desktop_nights,
+    select_desktop_people,
+    set_desktop_start_date,
 )
+from greatwalkbot.sources.gw_active_form import normalize_date_string
 
-# Re-export stable constants for docs/tests.
-TRACK_DROPDOWN_BUTTON_IDS = (
-    "great-walk-dropdown-button",
-    "great-walk-mobile-dropdown-button",
-)
+# Stable constants for docs/tests (desktop widget).
+TRACK_DROPDOWN_BUTTON_ID = "great-walk-dropdown-button"
+TRACK_DROPDOWN_LIST_ID = "great-walk-dropdown-box"
 START_DATE_BUTTON_ID = "great-walk-start-date"
-NIGHTS_SELECT_ID = "great-walk-nights"
-SEARCH_BUTTON_IDS = (
-    "great-walk-search-button",
-    "great-walk-search",
-    "btn-great-walk-search",
-)
+NIGHTS_DROPDOWN_BUTTON_ID = "great-walk-night-dropdown-button"
+PEOPLE_DROPDOWN_BUTTON_ID = "great-walk-people-dropdown-button"
+DESKTOP_SEARCH_SCOPED_SELECTOR = f'{DESKTOP_ROOT_SELECTOR} >> button:has-text("Search")'
 
 
 def capture_form_control_state(
@@ -39,15 +36,17 @@ def capture_form_control_state(
     track_name: str | None = None,
     start_date: date | None = None,
     nights: int | None = None,
+    people_size: int | None = None,
     backend_metadata_confirmed: bool | None = None,
 ) -> dict[str, Any]:
-    resolution = resolve_active_great_walk_form(page)
-    state = read_active_form_state(
+    binding = resolve_desktop_great_walk_root(page)
+    state = read_desktop_form_state(
         page,
-        resolution,
+        binding,
         track_name=track_name,
         start_date=start_date,
         nights=nights,
+        people_size=people_size,
     )
     if backend_metadata_confirmed is not None:
         state["backend_metadata_confirmed"] = backend_metadata_confirmed
@@ -55,29 +54,23 @@ def capture_form_control_state(
 
 
 def set_start_date(page: Any, target: date) -> None:
-    resolve_active_great_walk_form(page)
-    set_active_start_date(page, target)
+    resolve_desktop_great_walk_root(page)
+    set_desktop_start_date(page, target)
 
 
 def set_nights(page: Any, nights: int) -> None:
-    resolve_active_great_walk_form(page)
-    set_active_nights(page, nights)
+    resolve_desktop_great_walk_root(page)
+    select_desktop_nights(page, nights)
 
 
-def wait_for_form_values(
-    page: Any,
-    *,
-    track_name: str,
-    start_date: date,
-    nights: int,
-    timeout_ms: int = 5_000,
-) -> dict[str, Any]:
-    resolution = resolve_active_great_walk_form(page)
-    return wait_for_active_form_values(
+def set_people(page: Any, people_size: int) -> None:
+    resolve_desktop_great_walk_root(page)
+    select_desktop_people(page, people_size)
+
+
+def capture_selection_state(page: Any, track: Any, *, backend_metadata_confirmed: bool) -> dict[str, Any]:
+    return capture_desktop_selection_state(
         page,
-        resolution,
-        track_name=track_name,
-        start_date=start_date,
-        nights=nights,
-        timeout_ms=timeout_ms,
+        track,
+        backend_metadata_confirmed=backend_metadata_confirmed,
     )

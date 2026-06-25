@@ -59,6 +59,10 @@ class FakeSpaPage:
         self.evaluate_calls.append((expression, arg))
         if isinstance(arg, dict) and "trackName" in arg:
             return self._selection_committed
+        if isinstance(arg, dict) and "optionId" in arg:
+            if self._click_option_results:
+                return self._click_option_results.pop(0)
+            return arg["optionId"]
         if isinstance(arg, dict) and "optionIds" in arg:
             if self._click_option_results:
                 return self._click_option_results.pop(0)

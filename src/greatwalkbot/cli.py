@@ -52,11 +52,13 @@ def _build_playwright_source(
     headed: bool,
     session_manager: SessionManager | None = None,
     metrics: RuntimeMetrics | None = None,
+    people_size: int = 2,
 ) -> PlaywrightAvailabilitySource:
     return PlaywrightAvailabilitySource(
         headless=not headed,
         session_manager=session_manager,
         metrics=metrics,
+        people_size=people_size,
     )
 
 
@@ -107,6 +109,7 @@ def _cmd_watch(args: argparse.Namespace) -> int:
                 headed=args.headed,
                 session_manager=session_manager,
                 metrics=metrics,
+                people_size=plan.trip.party.size,
             )
         else:
             source = _build_http_source()
@@ -272,6 +275,7 @@ def _cmd_inspect_greatwalk_dom(args: argparse.Namespace) -> int:
             track,
             headed=args.headed,
             pause_seconds=args.pause_seconds,
+            open_date_picker=args.open_date_picker,
         )
         print(report.to_text())
         return 0
@@ -454,6 +458,11 @@ def main(argv: list[str] | None = None) -> int:
         type=int,
         default=0,
         help="Keep browser open for bounded manual inspection (max 300, default 0)",
+    )
+    inspect_dom.add_argument(
+        "--open-date-picker",
+        action="store_true",
+        help="Open the desktop date picker before capturing date-picker DOM evidence",
     )
     inspect_dom.set_defaults(func=_cmd_inspect_greatwalk_dom)
 

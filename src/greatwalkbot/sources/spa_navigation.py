@@ -24,32 +24,34 @@ _GREAT_WALK_UI_JS = """() => {
     return items.length > 0;
 }"""
 
-_DROPDOWN_BUTTON_IDS = (
-    "great-walk-dropdown-button",
-    "great-walk-mobile-dropdown-button",
-)
+_DROPDOWN_BUTTON_IDS = ("great-walk-dropdown-button",)
 
-_SELECTION_COMMITTED_JS = """({ optionIds, trackName }) => {
-    for (const id of optionIds) {
-        const el = document.getElementById(id);
-        if (!el) continue;
-        const selected =
-            el.getAttribute('aria-selected') === 'true' ||
-            el.classList.contains('selected') ||
-            el.classList.contains('active') ||
-            el.getAttribute('aria-checked') === 'true';
-        if (selected) return true;
-    }
-    const dropdownSelectors = [
-        '#great-walk-dropdown-button',
-        '#great-walk-mobile-dropdown-button',
-        '[id*="great-walk-dropdown"]',
-    ];
-    for (const sel of dropdownSelectors) {
-        const node = document.querySelector(sel);
-        if (node && node.textContent && node.textContent.includes(trackName)) {
-            return true;
+_DESKTOP_ROOT_JS = """() => {
+    const roots = Array.from(document.querySelectorAll('div[role="search"]'))
+        .filter(el => (el.className || '').toString().includes('themeTopsearch')
+            && el.getBoundingClientRect().width > 0
+            && el.getBoundingClientRect().height > 0);
+    return roots.length === 1 ? roots[0] : null;
+}"""
+
+_SELECTION_COMMITTED_JS = """({ optionId, trackName }) => {
+    const root = Array.from(document.querySelectorAll('div[role="search"]'))
+        .find(el => (el.className || '').toString().includes('themeTopsearch')
+            && el.getBoundingClientRect().width > 0);
+    if (root) {
+        const list = root.querySelector('#great-walk-dropdown-box');
+        if (list) {
+            const el = list.querySelector('#' + optionId);
+            if (el) {
+                const selected =
+                    el.getAttribute('aria-selected') === 'true' ||
+                    el.classList.contains('selected') ||
+                    el.classList.contains('active');
+                if (selected) return true;
+            }
         }
+        const btn = root.querySelector('#great-walk-dropdown-button');
+        if (btn && btn.textContent && btn.textContent.includes(trackName)) return true;
     }
     return false;
 }"""
@@ -106,40 +108,46 @@ def open_great_walk_view(
 def open_track_dropdown(page: SpaPage) -> bool:
     return bool(
         page.evaluate(
-            f"""() => {{
-                const ids = {list(_DROPDOWN_BUTTON_IDS)!r};
-                for (const id of ids) {{
-                    const btn = document.getElementById(id);
-                    if (btn) {{ btn.click(); return true; }}
-                }}
-                return false;
-            }}"""
+            """() => {
+                const root = Array.from(document.querySelectorAll('div[role="search"]'))
+                    .find(el => (el.className || '').toString().includes('themeTopsearch')
+                        && el.getBoundingClientRect().width > 0);
+                if (!root) return false;
+                const btn = root.querySelector('#great-walk-dropdown-button');
+                if (!btn) return false;
+                btn.click();
+                return true;
+            }"""
         )
     )
 
 
 def click_track_option(page: SpaPage, track: Track) -> str | None:
-    option_ids = list(track.dropdown_option_ids)
+    option_id = f"great-walk-{track.list_index + 1}"
     return page.evaluate(
-        """({ optionIds }) => {
-            for (const id of optionIds) {
-                const el = document.getElementById(id);
-                if (!el) continue;
-                el.click();
-                return id;
-            }
-            return null;
+        """({ optionId }) => {
+            const root = Array.from(document.querySelectorAll('div[role="search"]'))
+                .find(el => (el.className || '').toString().includes('themeTopsearch')
+                    && el.getBoundingClientRect().width > 0);
+            if (!root) return null;
+            const list = root.querySelector('#great-walk-dropdown-box');
+            if (!list) return null;
+            const el = list.querySelector('#' + optionId);
+            if (!el || el.id.includes('-mobile')) return null;
+            el.click();
+            return optionId;
         }""",
-        {"optionIds": option_ids},
+        {"optionId": option_id},
     )
 
 
 def is_track_selection_committed(page: SpaPage, track: Track) -> bool:
+    option_id = f"great-walk-{track.list_index + 1}"
     return bool(
         page.evaluate(
             _SELECTION_COMMITTED_JS,
             {
-                "optionIds": list(track.dropdown_option_ids),
+                "optionId": option_id,
                 "trackName": track.name,
             },
         )
@@ -217,16 +225,9 @@ def commit_track_selection(
 
 
 def click_search_button(page: SpaPage) -> None:
-    clicked = page.evaluate(
-        """() => {
-            const btn = Array.from(document.querySelectorAll('button'))
-                .find(b => b.textContent.trim() === 'Search' && b.offsetParent);
-            if (btn) { btn.click(); return true; }
-            return false;
-        }"""
-    )
-    if not clicked:
-        raise UIReadinessError("Could not find the Great Walk Search button on the page")
+    from greatwalkbot.sources.gw_desktop_form import click_desktop_search_button
+
+    click_desktop_search_button(page)
 
 
 # Backwards-compatible alias used in older tests.

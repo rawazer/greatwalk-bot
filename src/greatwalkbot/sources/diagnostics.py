@@ -91,12 +91,22 @@ def save_dom_inspection_artifacts(
         summary["network_timeline"] = network_timeline[:40]
 
     dom_report_path = run_dir / "dom_report.json"
-    bounded_report = {
-        "candidate_count": dom_report.get("candidate_count", 0),
-        "candidates": list(dom_report.get("candidates") or [])[:80],
-        "visible_controls": list(dom_report.get("visible_controls") or [])[:40],
-        "page_containers": dom_report.get("page_containers"),
-    }
+    bounded_report: dict[str, Any] = {}
+    if "candidate_count" in dom_report:
+        bounded_report = {
+            "candidate_count": dom_report.get("candidate_count", 0),
+            "candidates": list(dom_report.get("candidates") or [])[:80],
+            "visible_controls": list(dom_report.get("visible_controls") or [])[:40],
+            "page_containers": dom_report.get("page_containers"),
+        }
+    if dom_report.get("desktop_dropdown_options"):
+        bounded_report["desktop_dropdown_options"] = dom_report["desktop_dropdown_options"]
+    if dom_report.get("date_picker_elements"):
+        bounded_report["date_picker_elements"] = list(dom_report["date_picker_elements"])[:30]
+    if dom_report.get("form_state"):
+        bounded_report["form_state"] = dom_report["form_state"]
+    if not bounded_report:
+        bounded_report = {"summary": discovery_summary or {}}
     dom_report_path.write_text(json.dumps(bounded_report, indent=2) + "\n", encoding="utf-8")
     summary["dom_report_path"] = str(dom_report_path)
 

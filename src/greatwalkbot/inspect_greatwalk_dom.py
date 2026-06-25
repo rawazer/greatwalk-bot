@@ -10,6 +10,12 @@ from typing import Any
 from greatwalkbot.constants import GREATWALK_HASH
 from greatwalkbot.models import Track
 from greatwalkbot.sources.diagnostics import DiagnosticArtifacts, save_dom_inspection_artifacts
+from greatwalkbot.sources.gw_desktop_form import (
+    discover_date_picker_elements,
+    discover_desktop_dropdown_options,
+    open_desktop_date_picker,
+    resolve_desktop_great_walk_root,
+)
 from greatwalkbot.sources.gw_dom_discovery import (
     assess_control_discovery,
     build_discovery_summary,
@@ -38,6 +44,7 @@ class DomInspectionReport:
     track_slug: str
     track_name: str
     selection_metadata_confirmed: bool
+    desktop_root: dict[str, Any]
     discovery_complete: bool
     diagnostic_path: str
     discovery_summary: dict[str, Any]
@@ -47,9 +54,18 @@ class DomInspectionReport:
         lines = [
             f"Track: {self.track_name} ({self.track_slug})",
             f"Selection metadata confirmed: {self.selection_metadata_confirmed}",
+            f"Desktop root: {self.desktop_root.get('selector')}",
             f"Control discovery complete: {self.discovery_complete}",
             f"Diagnostics: {self.diagnostic_path}",
         ]
+        dropdowns = self.discovery_summary.get("desktop_dropdown_options") or {}
+        for key in ("track_options", "nights_options", "people_options"):
+            opts = dropdowns.get(key) or []
+            if opts:
+                lines.append(f"{key}: {len(opts)} visible option(s)")
+        date_elems = self.discovery_summary.get("date_picker_elements") or []
+        if date_elems:
+            lines.append(f"date_picker_elements: {len(date_elems)} visible node(s)")
         missing = self.discovery_summary.get("missing_controls") or []
         if missing:
             lines.append(f"Missing controls: {', '.join(missing)}")
@@ -79,6 +95,7 @@ def run_inspect_greatwalk_dom(
     *,
     headed: bool = False,
     pause_seconds: int = 0,
+    open_date_picker: bool = False,
     navigation_timeout_ms: int = DEFAULT_NAVIGATION_TIMEOUT_MS,
     app_ready_timeout_ms: int = DEFAULT_APP_READY_TIMEOUT_MS,
     selection_commit_timeout_ms: int = DEFAULT_SELECTION_COMMIT_TIMEOUT_MS,
@@ -117,20 +134,44 @@ def run_inspect_greatwalk_dom(
             timeout_ms=metadata_wait_ms,
         )
 
-        if pause_seconds > 0:
-            print(
-                f"Browser will remain open for {pause_seconds}s for manual inspection "
-                "(DevTools / visual review). Search and booking actions are disabled."
-            )
-            page.wait_for_timeout(pause_seconds * 1000)
+        binding = resolve_desktop_great_walk_root(page)
+        desktop_root = {
+            "selector": binding.selector,
+            "count": binding.count,
+            "id": binding.root_id,
+            "class": binding.root_class,
+        }
+
+        dropdown_options = discover_desktop_dropdown_options(page)
+        date_picker_elements: list[dict[str, Any]] = []
+        if open_date_picker:
+            open_desktop_date_picker(page)
+            page.wait_for_timeout(400)
+            date_picker_elements = discover_date_picker_elements(page)
 
         dom_report = discover_great_walk_dom(page)
+        dom_report["desktop_root"] = desktop_root
+        dom_report["desktop_dropdown_options"] = dropdown_options
+        if date_picker_elements:
+            dom_report["date_picker_elements"] = date_picker_elements
+
         assessment = assess_control_discovery(dom_report)
         summary = build_discovery_summary(
             dom_report,
             assessment,
             selection_metadata_confirmed=metadata_confirmed,
         )
+        summary["desktop_root"] = desktop_root
+        summary["desktop_dropdown_options"] = dropdown_options
+        if date_picker_elements:
+            summary["date_picker_elements"] = date_picker_elements
+
+        if pause_seconds > 0:
+            print(
+                f"Browser will remain open for {pause_seconds}s for manual inspection "
+                "(DevTools / visual review). Search and booking actions are disabled."
+            )
+            page.wait_for_timeout(pause_seconds * 1000)
 
         artifacts = save_dom_inspection_artifacts(
             page=page,
@@ -146,6 +187,7 @@ def run_inspect_greatwalk_dom(
             track_slug=track.slug,
             track_name=track.name,
             selection_metadata_confirmed=metadata_confirmed,
+            desktop_root=desktop_root,
             discovery_complete=assessment.complete,
             diagnostic_path=str(artifacts.directory),
             discovery_summary=summary,

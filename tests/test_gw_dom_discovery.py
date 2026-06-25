@@ -15,10 +15,15 @@ from greatwalkbot.domain.party import Party
 from greatwalkbot.domain.plan import TripPlan
 from greatwalkbot.domain.track import TrackPreference
 from greatwalkbot.domain.trip import Trip
-from greatwalkbot.infra.errors import GreatWalkControlDiscoveryIncompleteError
+from greatwalkbot.infra.errors import (
+    GreatWalkControlDiscoveryIncompleteError,
+    GreatWalkDateControlDiscoveryIncompleteError,
+    GreatWalkDesktopRootError,
+)
 from greatwalkbot.inspect_greatwalk_dom import run_inspect_greatwalk_dom
 from greatwalkbot.models import Track
 from greatwalkbot.sources.diagnostics import save_dom_inspection_artifacts
+from greatwalkbot.sources.gw_desktop_form import DesktopRootBinding
 from greatwalkbot.sources.gw_control_gate import run_control_discovery_gate
 from greatwalkbot.sources.gw_dom_discovery import (
     ControlDiscoveryAssessment,
@@ -236,25 +241,38 @@ def test_inspect_cli_has_no_telegram_dedupe_or_search_side_effects():
                         return_value=True,
                     ):
                         with patch(
-                            "greatwalkbot.inspect_greatwalk_dom.discover_great_walk_dom",
-                            return_value={
-                                "candidate_count": 4,
-                                "candidates": _complete_candidates(),
-                                "visible_controls": [],
-                                "page_containers": {},
-                            },
-                        ):
-                            with patch(
-                                "greatwalkbot.inspect_greatwalk_dom.save_dom_inspection_artifacts"
-                            ) as save_artifacts:
-                                from greatwalkbot.sources.diagnostics import DiagnosticArtifacts
+                            "greatwalkbot.inspect_greatwalk_dom.resolve_desktop_great_walk_root",
+                        ) as resolve_root:
+                            from greatwalkbot.sources.gw_desktop_form import DesktopRootBinding
 
-                                save_artifacts.return_value = DiagnosticArtifacts(
-                                    directory=Path("logs/diagnostics/test_milford"),
-                                    summary_path=Path("logs/diagnostics/test_milford/summary.json"),
-                                    screenshot_path=None,
-                                )
-                                report = run_inspect_greatwalk_dom(MILFORD)
+                            resolve_root.return_value = DesktopRootBinding(
+                                selector='div[role="search"].themeTopsearch:visible',
+                                count=1,
+                            )
+                            with patch(
+                                "greatwalkbot.inspect_greatwalk_dom.discover_desktop_dropdown_options",
+                                return_value={"track_options": [], "nights_options": [], "people_options": []},
+                            ):
+                                with patch(
+                                    "greatwalkbot.inspect_greatwalk_dom.discover_great_walk_dom",
+                                    return_value={
+                                        "candidate_count": 4,
+                                        "candidates": _complete_candidates(),
+                                        "visible_controls": [],
+                                        "page_containers": {},
+                                    },
+                                ):
+                                    with patch(
+                                        "greatwalkbot.inspect_greatwalk_dom.save_dom_inspection_artifacts"
+                                    ) as save_artifacts:
+                                        from greatwalkbot.sources.diagnostics import DiagnosticArtifacts
+
+                                        save_artifacts.return_value = DiagnosticArtifacts(
+                                            directory=Path("logs/diagnostics/test_milford"),
+                                            summary_path=Path("logs/diagnostics/test_milford/summary.json"),
+                                            screenshot_path=None,
+                                        )
+                                        report = run_inspect_greatwalk_dom(MILFORD)
 
     session.prepare_fetch.assert_not_called()
     session.capture_availability_after_search.assert_not_called()
@@ -267,7 +285,7 @@ def test_inspect_headed_pause_is_bounded():
         run_inspect_greatwalk_dom(MILFORD, pause_seconds=999)
 
 
-def test_debug_search_reports_discovery_incomplete(tmp_path: Path):
+def test_debug_search_reports_date_discovery_incomplete(tmp_path: Path):
     plan = _trip_plan()
     with patch("greatwalkbot.debug_search.SessionManager") as session_cls:
         session = MagicMock()
@@ -275,87 +293,97 @@ def test_debug_search_reports_discovery_incomplete(tmp_path: Path):
         session.network.timeline_dicts.return_value = []
         session.network.post_search_timeline_dicts.return_value = []
         session.network.saw_selection_metadata.return_value = True
+        session.last_form_state = None
         session_cls.return_value = session
         with patch("greatwalkbot.debug_search.commit_track_selection"):
             with patch("greatwalkbot.debug_search.navigate_to_site"):
                 with patch("greatwalkbot.debug_search.wait_for_great_walk_ui"):
                     with patch(
-                        "greatwalkbot.debug_search.run_control_discovery_gate",
-                        side_effect=GreatWalkControlDiscoveryIncompleteError(
-                            "controls missing",
-                            diagnostic_path=str(tmp_path / "dom_diag"),
-                            assessment=assess_control_discovery(_form1_only_report()),
-                        ),
-                    ):
-                        report = run_debug_search(
-                            plan,
-                            ROUTEBURN,
-                            start_date=date(2026, 12, 3),
-                        )
-
-    assert report.result == "failed"
-    assert report.error_type == "GreatWalkControlDiscoveryIncompleteError"
-    assert report.dom_diagnostic_path == str(tmp_path / "dom_diag")
-    assert report.control_discovery is not None
-    assert report.control_discovery["discovery_complete"] is False
-    session.capture_availability_after_search.assert_not_called()
-
-
-def test_debug_search_success_when_discovery_complete():
-    plan = _trip_plan()
-    assessment = ControlDiscoveryAssessment(
-        complete=True,
-        found={k: {"suggested_locator": f"#{k}"} for k in ("track", "start_date", "nights", "search")},
-    )
-    dom_artifacts = MagicMock()
-    dom_artifacts.directory = Path("logs/diagnostics/complete")
-
-    with patch("greatwalkbot.debug_search.SessionManager") as session_cls:
-        session = MagicMock()
-        session.is_healthy.return_value = True
-        session.network.timeline_dicts.return_value = []
-        session.network.post_search_timeline_dicts.return_value = []
-        session.network.saw_selection_metadata.return_value = True
-        session_cls.return_value = session
-        with patch("greatwalkbot.debug_search.commit_track_selection"):
-            with patch("greatwalkbot.debug_search.navigate_to_site"):
-                with patch("greatwalkbot.debug_search.wait_for_great_walk_ui"):
-                    with patch(
-                        "greatwalkbot.debug_search.run_control_discovery_gate",
-                        return_value=({}, assessment, dom_artifacts),
+                        "greatwalkbot.debug_search.wait_for_selection_metadata",
+                        return_value=True,
                     ):
                         with patch(
-                            "greatwalkbot.debug_search.resolve_active_great_walk_form",
-                            return_value=ActiveFormResolution(
-                                candidate_count=1,
-                                active_root={"id": "gw-panel", "controls_found": {}},
+                            "greatwalkbot.debug_search.resolve_desktop_great_walk_root",
+                            return_value=DesktopRootBinding(
+                                selector='div[role="search"].themeTopsearch:visible',
+                                count=1,
                             ),
                         ):
                             with patch(
-                                "greatwalkbot.debug_search.capture_selection_state",
+                                "greatwalkbot.debug_search.capture_desktop_selection_state",
                                 return_value={"visible_selection_committed": True},
                             ):
                                 with patch(
-                                    "greatwalkbot.debug_search.inventory_active_form",
-                                    return_value=[],
+                                    "greatwalkbot.debug_search.prepare_search_form",
+                                    side_effect=GreatWalkDateControlDiscoveryIncompleteError(
+                                        "date unknown",
+                                        date_iso="2026-12-03",
+                                    ),
+                                ):
+                                    with patch(
+                                        "greatwalkbot.debug_search._save_date_picker_diagnostics"
+                                    ) as save_diag:
+                                        from greatwalkbot.sources.diagnostics import DiagnosticArtifacts
+
+                                        save_diag.return_value = DiagnosticArtifacts(
+                                            directory=tmp_path / "dom_diag",
+                                            summary_path=tmp_path / "dom_diag" / "summary.json",
+                                            screenshot_path=None,
+                                        )
+                                        report = run_debug_search(
+                                            plan,
+                                            ROUTEBURN,
+                                            start_date=date(2026, 12, 3),
+                                        )
+
+    assert report.result == "failed"
+    assert report.error_type == "GreatWalkDateControlDiscoveryIncompleteError"
+    assert report.dom_diagnostic_path == str(tmp_path / "dom_diag")
+    session.capture_availability_after_search.assert_not_called()
+
+
+def test_debug_search_success_when_desktop_form_ready():
+    plan = _trip_plan()
+    from greatwalkbot.sources.gw_desktop_form import DesktopRootBinding
+
+    binding = DesktopRootBinding(selector='div[role="search"].themeTopsearch:visible', count=1)
+
+    with patch("greatwalkbot.debug_search.SessionManager") as session_cls:
+        session = MagicMock()
+        session.is_healthy.return_value = True
+        session.network.timeline_dicts.return_value = []
+        session.network.post_search_timeline_dicts.return_value = []
+        session.network.saw_selection_metadata.return_value = True
+        session.capture_availability_after_search = MagicMock(return_value={})
+        session_cls.return_value = session
+        with patch("greatwalkbot.debug_search.commit_track_selection"):
+            with patch("greatwalkbot.debug_search.navigate_to_site"):
+                with patch("greatwalkbot.debug_search.wait_for_great_walk_ui"):
+                    with patch(
+                        "greatwalkbot.debug_search.wait_for_selection_metadata",
+                        return_value=True,
+                    ):
+                        with patch(
+                            "greatwalkbot.debug_search.resolve_desktop_great_walk_root",
+                            return_value=binding,
+                        ):
+                            with patch(
+                                "greatwalkbot.debug_search.capture_desktop_selection_state",
+                                return_value={"visible_selection_committed": True},
+                            ):
+                                with patch(
+                                    "greatwalkbot.debug_search.capture_search_form_state",
+                                    return_value={"nights_control": {"raw_value": "2"}},
                                 ):
                                     with patch(
                                         "greatwalkbot.debug_search.prepare_search_form",
                                         return_value={"nights_control": {"raw_value": "2"}},
                                     ):
-                                        with patch(
-                                            "greatwalkbot.debug_search.capture_search_form_state",
-                                            return_value={"nights_control": {"raw_value": "2"}},
-                                        ):
-                                            with patch(
-                                                "greatwalkbot.debug_search.wait_for_selection_metadata",
-                                                return_value=True,
-                                            ):
-                                                report = run_debug_search(
-                                                    plan,
-                                                    ROUTEBURN,
-                                                    start_date=date(2026, 12, 3),
-                                                )
+                                        report = run_debug_search(
+                                            plan,
+                                            ROUTEBURN,
+                                            start_date=date(2026, 12, 3),
+                                        )
 
     assert report.result == "success"
     session.capture_availability_after_search.assert_called_once()

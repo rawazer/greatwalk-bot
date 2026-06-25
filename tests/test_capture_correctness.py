@@ -264,5 +264,6 @@ def test_capture_failure_after_search_uses_typed_error():
                 track=MILFORD,
                 start_date=date(2026, 12, 3),
                 nights=3,
+                people_size=2,
                 timeout_ms=100,
             )
