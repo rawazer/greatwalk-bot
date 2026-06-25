@@ -10,7 +10,16 @@ from typing import Any
 from playwright.sync_api import Browser, Page, Playwright, Route, sync_playwright
 
 from greatwalkbot.constants import DEFAULT_USER_AGENT, GW_FACILITY_PATH
-from greatwalkbot.infra.errors import FetchError, SessionError
+from greatwalkbot.infra.errors import SessionError
+from greatwalkbot.sources.availability_capture import (
+    classify_capture_failure,
+    wait_for_availability_response,
+)
+from greatwalkbot.sources.network_recorder import (
+    NetworkRecorder,
+    response_body_is_availability_payload,
+)
+from greatwalkbot.sources.spa_navigation import click_search_button
 
 logger = logging.getLogger(__name__)
 
@@ -26,12 +35,18 @@ class SessionManager:
         self._page: Page | None = None
         self._current_request_body: dict[str, Any] | None = None
         self._captured_payload: dict | None = None
+        self._network = NetworkRecorder()
+        self._selection_committed = False
 
     @property
     def page(self) -> Page:
         self._ensure_started()
         assert self._page is not None
         return self._page
+
+    @property
+    def network(self) -> NetworkRecorder:
+        return self._network
 
     def start(self) -> None:
         if self._browser is not None:
@@ -66,6 +81,8 @@ class SessionManager:
         self._page = None
         self._captured_payload = None
         self._current_request_body = None
+        self._network = NetworkRecorder()
+        self._selection_committed = False
 
     def is_healthy(self) -> bool:
         if self._browser is None or self._page is None:
@@ -79,25 +96,50 @@ class SessionManager:
         self._ensure_started()
         self._current_request_body = request_body
         self._captured_payload = None
+        self._selection_committed = False
+
+    def begin_capture_cycle(self, *, place_id: int) -> None:
+        """Reset per-track capture state before selection/search actions."""
+        self._captured_payload = None
+        self._selection_committed = False
+        self._network.begin_cycle(place_id=place_id)
+
+    def mark_selection_committed(self) -> None:
+        self._selection_committed = True
 
     def captured_payload(self) -> dict | None:
         return self._captured_payload
 
-    def wait_for_capture(self, timeout_ms: int) -> dict:
-        """Wait up to timeout_ms for a greatwalkplacefacility JSON response."""
-        deadline = time.monotonic() + (timeout_ms / 1000.0)
-        while time.monotonic() < deadline:
-            payload = self._captured_payload
-            if payload is not None:
-                return payload
-            if self._page is not None:
-                self._page.wait_for_timeout(100)
-            else:
-                time.sleep(0.1)
-        raise FetchError(
-            "No availability data captured within "
-            f"{timeout_ms}ms. AWS WAF may have blocked the session; retry with --headed."
-        )
+    def capture_availability_after_search(self, *, timeout_ms: int) -> dict:
+        """Wait for availability using expect_response registered before Search click."""
+        assert self._page is not None
+        try:
+            payload = wait_for_availability_response(
+                self._page,
+                click_search=lambda: click_search_button(self._page),
+                timeout_ms=timeout_ms,
+            )
+            self._captured_payload = payload
+            return payload
+        except Exception as exc:
+            page_html = None
+            try:
+                page_html = self._page.content()
+            except Exception:
+                pass
+            from greatwalkbot.infra.errors import AvailabilityRequestFailedError
+
+            if isinstance(exc, AvailabilityRequestFailedError):
+                raise
+            raise classify_capture_failure(
+                self._network,
+                selection_committed=self._selection_committed,
+                place_id=self._current_request_body.get("placeId")
+                if self._current_request_body
+                else 0,
+                timeout_ms=timeout_ms,
+                page_html=page_html,
+            ) from exc
 
     def _ensure_started(self) -> None:
         if not self.is_healthy():
@@ -109,6 +151,8 @@ class SessionManager:
         page._gwbot_console_messages = []  # type: ignore[attr-defined]
         page._gwbot_page_errors = []  # type: ignore[attr-defined]
 
+        self._network.attach(page)
+
         def on_console(msg) -> None:
             page._gwbot_console_messages.append(  # type: ignore[attr-defined]
                 f"{msg.type}: {msg.text}"[:500]
@@ -118,15 +162,19 @@ class SessionManager:
             page._gwbot_page_errors.append(str(exc)[:500])  # type: ignore[attr-defined]
 
         def on_response(response) -> None:
-            if GW_FACILITY_PATH not in response.url or response.status != 200:
+            if GW_FACILITY_PATH not in response.url:
+                return
+            if response.status != 200:
                 return
             content_type = response.headers.get("content-type", "")
             if "json" not in content_type:
                 return
             try:
-                self._captured_payload = response.json()
+                data = response.json()
             except json.JSONDecodeError:
                 return
+            if response_body_is_availability_payload(data):
+                self._captured_payload = data
 
         def rewrite_facility_post(route: Route) -> None:
             if route.request.method != "POST":

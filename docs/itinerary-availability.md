@@ -100,7 +100,20 @@ Bottleneck spaces on a complete itinerary = minimum `TotalAvailable` across requ
 - **Direction detection from API:** DOC does not always label direction explicitly in `greatwalkplacefacility`. Routeburn directions are inferred by checking both registered facility sequences.
 - **Non-fixed tracks:** Tracks without registry metadata and without `complete_itinerary_only` fall back to conservative day-level matching (no completeness guarantee).
 - **Locks and cart state:** `TotalAvailable` may change between check and book; the bot does not call unit-lock endpoints.
-- **WAF:** Direct HTTP may be blocked; Playwright is the operational fetch path.
+- **WAF:** Direct HTTP may be blocked; Playwright is the operational fetch path. A missing `greatwalkplacefacility` response after Search is **not** classified as WAF unless challenge indicators appear in network headers or page HTML.
+
+## Selection and capture (Milestone 9.2)
+
+Before waiting for `POST search/greatwalkplacefacility`, the bot:
+
+1. Opens the Great Walk dropdown (`great-walk-dropdown-button` or mobile variant).
+2. Clicks the desktop or mobile option id (`great-walk-{n}` / `great-walk-mobile-{n}`).
+3. Waits until selection **commits** — selected UI state or `GET search/getgreatwalksearchdata/placeId/{id}` with HTTP 200.
+4. Registers an availability response listener, then clicks **Search**.
+
+If step 3 fails: `TrackSelectionNotCommittedError` (one view recovery, then retry). If step 4 sees no matching request: `AvailabilityRequestNotObservedError`. Non-2xx availability responses: `AvailabilityRequestFailedError`. WAF only when concrete signals are recorded.
+
+Failed fetches write `network_timeline` (sanitized path, method, status, candidate flags) into `logs/diagnostics/*/summary.json`.
 
 ## Diagnostics
 

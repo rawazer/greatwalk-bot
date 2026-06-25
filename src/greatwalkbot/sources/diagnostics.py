@@ -69,6 +69,7 @@ def save_session_failure_diagnostics(
     track_slug: str,
     error: BaseException,
     diagnostics_dir: Path | None = None,
+    network_timeline: list[dict[str, Any]] | None = None,
 ) -> DiagnosticArtifacts | None:
     """Save screenshot and sanitized summary. Never stores cookies, tokens, or payloads."""
     base_dir = diagnostics_dir or DEFAULT_DIAGNOSTICS_DIR
@@ -83,6 +84,9 @@ def save_session_failure_diagnostics(
         "error_type": type(error).__name__,
         "error_message": str(error)[:2000],
     }
+
+    if network_timeline:
+        summary["network_timeline"] = network_timeline[:80]
 
     screenshot_path: Path | None = None
     if page is not None:

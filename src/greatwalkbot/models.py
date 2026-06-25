@@ -28,6 +28,11 @@ class Track:
     def dropdown_element_id(self) -> str:
         return f"great-walk-{self.list_index + 1}"
 
+    @property
+    def dropdown_option_ids(self) -> tuple[str, ...]:
+        index = self.list_index + 1
+        return (f"great-walk-{index}", f"great-walk-mobile-{index}")
+
 
 @dataclass(frozen=True)
 class AvailabilityDay:

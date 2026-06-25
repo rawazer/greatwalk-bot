@@ -6,22 +6,23 @@ import logging
 import time
 from datetime import date
 
-from greatwalkbot.infra.errors import FetchError, RetryableError, SessionError
+from greatwalkbot.constants import GREATWALK_HASH
+from greatwalkbot.infra.errors import RetryableError, SessionError
 from greatwalkbot.models import AvailabilitySnapshot, Track
 from greatwalkbot.parsing import build_gw_facility_request, parse_gw_facility_response
 from greatwalkbot.sources.diagnostics import save_session_failure_diagnostics
 from greatwalkbot.sources.fetch_timing import TrackFetchTiming
 from greatwalkbot.sources.session_manager import SessionManager
 from greatwalkbot.sources.spa_navigation import (
-    click_search_button,
+    commit_track_selection,
     navigate_to_site,
-    select_track_with_recovery,
     wait_for_great_walk_ui,
 )
 from greatwalkbot.sources.spa_timing import (
     DEFAULT_APP_READY_TIMEOUT_MS,
     DEFAULT_CAPTURE_TIMEOUT_MS,
     DEFAULT_NAVIGATION_TIMEOUT_MS,
+    DEFAULT_SELECTION_COMMIT_TIMEOUT_MS,
     MAX_FETCH_ATTEMPTS_PER_TRACK,
 )
 
@@ -44,6 +45,7 @@ class PlaywrightAvailabilitySource:
         navigation_timeout_ms: int = DEFAULT_NAVIGATION_TIMEOUT_MS,
         app_ready_timeout_ms: int = DEFAULT_APP_READY_TIMEOUT_MS,
         capture_timeout_ms: int = DEFAULT_CAPTURE_TIMEOUT_MS,
+        selection_commit_timeout_ms: int = DEFAULT_SELECTION_COMMIT_TIMEOUT_MS,
         session_manager: SessionManager | None = None,
         metrics: object | None = None,
     ) -> None:
@@ -51,6 +53,7 @@ class PlaywrightAvailabilitySource:
         self.navigation_timeout_ms = navigation_timeout_ms
         self.app_ready_timeout_ms = app_ready_timeout_ms
         self.capture_timeout_ms = capture_timeout_ms
+        self.selection_commit_timeout_ms = selection_commit_timeout_ms
         self._session = session_manager
         self._metrics = metrics
         self._owns_session = session_manager is None
@@ -109,6 +112,7 @@ class PlaywrightAvailabilitySource:
                     track_name=track.name,
                     track_slug=track.slug,
                     error=exc,
+                    network_timeline=self._session.network.timeline_dicts(),
                 )
                 if attempt >= MAX_FETCH_ATTEMPTS_PER_TRACK:
                     break
@@ -140,30 +144,35 @@ class PlaywrightAvailabilitySource:
             raise SessionError("Browser session is unhealthy")
 
         started = time.monotonic()
+        recorder = self._session.network
 
         request_body = build_gw_facility_request(track, from_date, to_date)
         self._session.prepare_fetch(request_body)
         page = self._session.page
 
         nav_t0 = time.monotonic()
-        from greatwalkbot.constants import GREATWALK_HASH
-
         navigate_to_site(page, timeout_ms=self.navigation_timeout_ms)
         nav_t1 = time.monotonic()
         page.evaluate(f"window.location.hash = '{GREATWALK_HASH}'")
         wait_for_great_walk_ui(page, timeout_ms=self.app_ready_timeout_ms)
         app_t1 = time.monotonic()
 
-        select_track_with_recovery(
+        self._session.begin_capture_cycle(place_id=track.place_id)
+
+        commit_track_selection(
             page,
             track,
+            recorder,
             navigation_timeout_ms=self.navigation_timeout_ms,
             app_ready_timeout_ms=self.app_ready_timeout_ms,
+            selection_commit_timeout_ms=self.selection_commit_timeout_ms,
         )
+        self._session.mark_selection_committed()
 
-        click_search_button(page)
         capture_started = time.monotonic()
-        payload = self._session.wait_for_capture(self.capture_timeout_ms)
+        payload = self._session.capture_availability_after_search(
+            timeout_ms=self.capture_timeout_ms,
+        )
         capture_done = time.monotonic()
 
         timing = TrackFetchTiming(

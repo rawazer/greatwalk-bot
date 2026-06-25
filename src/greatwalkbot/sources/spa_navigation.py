@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Protocol
 
 from greatwalkbot.constants import GREATWALK_HASH, SITE_URL
-from greatwalkbot.infra.errors import NavigationError, TrackSelectorError, UIReadinessError
+from greatwalkbot.infra.errors import (
+    NavigationError,
+    TrackSelectionNotCommittedError,
+    TrackSelectorError,
+    UIReadinessError,
+)
 from greatwalkbot.models import Track
+from greatwalkbot.sources.network_recorder import NetworkRecorder
 from greatwalkbot.sources.spa_timing import GOTO_WAIT_UNTIL
 
 logger = logging.getLogger(__name__)
@@ -17,13 +24,45 @@ _GREAT_WALK_UI_JS = """() => {
     return items.length > 0;
 }"""
 
+_DROPDOWN_BUTTON_IDS = (
+    "great-walk-dropdown-button",
+    "great-walk-mobile-dropdown-button",
+)
+
+_SELECTION_COMMITTED_JS = """({ optionIds, trackName }) => {
+    for (const id of optionIds) {
+        const el = document.getElementById(id);
+        if (!el) continue;
+        const selected =
+            el.getAttribute('aria-selected') === 'true' ||
+            el.classList.contains('selected') ||
+            el.classList.contains('active') ||
+            el.getAttribute('aria-checked') === 'true';
+        if (selected) return true;
+    }
+    const dropdownSelectors = [
+        '#great-walk-dropdown-button',
+        '#great-walk-mobile-dropdown-button',
+        '[id*="great-walk-dropdown"]',
+    ];
+    for (const sel of dropdownSelectors) {
+        const node = document.querySelector(sel);
+        if (node && node.textContent && node.textContent.includes(trackName)) {
+            return true;
+        }
+    }
+    return false;
+}"""
+
 
 class SpaPage(Protocol):
     def goto(self, url: str, *, wait_until: str, timeout: int) -> Any: ...
 
-    def evaluate(self, expression: str) -> Any: ...
+    def evaluate(self, expression: str, arg: Any = None) -> Any: ...
 
     def wait_for_function(self, expression: str, *, timeout: int) -> Any: ...
+
+    def wait_for_timeout(self, timeout: int) -> None: ...
 
 
 def navigate_to_site(
@@ -64,63 +103,116 @@ def open_great_walk_view(
     wait_for_great_walk_ui(page, timeout_ms=app_ready_timeout_ms)
 
 
-def track_element_present(page: SpaPage, element_id: str) -> bool:
-    return bool(
-        page.evaluate(
-            f"() => !!document.getElementById({element_id!r})"
-        )
-    )
-
-
-def click_track_element(page: SpaPage, element_id: str) -> bool:
+def open_track_dropdown(page: SpaPage) -> bool:
     return bool(
         page.evaluate(
             f"""() => {{
-                const el = document.getElementById({element_id!r});
-                if (!el) return false;
-                el.click();
-                return true;
+                const ids = {list(_DROPDOWN_BUTTON_IDS)!r};
+                for (const id of ids) {{
+                    const btn = document.getElementById(id);
+                    if (btn) {{ btn.click(); return true; }}
+                }}
+                return false;
             }}"""
         )
     )
 
 
-def select_track_with_recovery(
+def click_track_option(page: SpaPage, track: Track) -> str | None:
+    option_ids = list(track.dropdown_option_ids)
+    return page.evaluate(
+        """({ optionIds }) => {
+            for (const id of optionIds) {
+                const el = document.getElementById(id);
+                if (!el) continue;
+                el.click();
+                return id;
+            }
+            return null;
+        }""",
+        {"optionIds": option_ids},
+    )
+
+
+def is_track_selection_committed(page: SpaPage, track: Track) -> bool:
+    return bool(
+        page.evaluate(
+            _SELECTION_COMMITTED_JS,
+            {
+                "optionIds": list(track.dropdown_option_ids),
+                "trackName": track.name,
+            },
+        )
+    )
+
+
+def wait_for_track_selection_committed(
     page: SpaPage,
     track: Track,
+    recorder: NetworkRecorder,
+    *,
+    timeout_ms: int,
+) -> bool:
+    deadline = time.monotonic() + (timeout_ms / 1000.0)
+    while time.monotonic() < deadline:
+        if is_track_selection_committed(page, track):
+            return True
+        if recorder.saw_selection_metadata(track.place_id):
+            return True
+        page.wait_for_timeout(100)
+    return False
+
+
+def commit_track_selection(
+    page: SpaPage,
+    track: Track,
+    recorder: NetworkRecorder,
     *,
     site_url: str = SITE_URL,
     greatwalk_hash: str = GREATWALK_HASH,
     navigation_timeout_ms: int,
     app_ready_timeout_ms: int,
+    selection_commit_timeout_ms: int,
 ) -> None:
-    """Select a track, performing exactly one bounded view recovery if needed."""
-    element_id = track.dropdown_element_id
+    """Open dropdown, select track, and wait until SPA commits the selection."""
+    for recovery in range(2):
+        if recovery == 1:
+            logger.warning(
+                "Track selection not committed for %s; attempting one view recovery",
+                track.slug,
+            )
+            open_great_walk_view(
+                page,
+                site_url=site_url,
+                greatwalk_hash=greatwalk_hash,
+                navigation_timeout_ms=navigation_timeout_ms,
+                app_ready_timeout_ms=app_ready_timeout_ms,
+            )
 
-    if click_track_element(page, element_id):
-        return
+        open_track_dropdown(page)
+        clicked_id = click_track_option(page, track)
+        if clicked_id is None:
+            if recovery == 0:
+                continue
+            raise TrackSelectorError(
+                f"Could not click any track option for {track.name!r} "
+                f"(tried {track.dropdown_option_ids})",
+                track_slug=track.slug,
+                element_id=track.dropdown_element_id,
+            )
 
-    logger.warning(
-        "Track element %s not found for %s; attempting one Great Walk view recovery",
-        element_id,
-        track.slug,
-    )
-    open_great_walk_view(
-        page,
-        site_url=site_url,
-        greatwalk_hash=greatwalk_hash,
-        navigation_timeout_ms=navigation_timeout_ms,
-        app_ready_timeout_ms=app_ready_timeout_ms,
-    )
+        if wait_for_track_selection_committed(
+            page,
+            track,
+            recorder,
+            timeout_ms=selection_commit_timeout_ms,
+        ):
+            return
 
-    if click_track_element(page, element_id):
-        return
-
-    raise TrackSelectorError(
-        f"Could not select track dropdown item #{element_id} for {track.name!r} "
-        f"after one recovery attempt",
-        track_slug=track.slug,
-        element_id=element_id,
+    raise TrackSelectionNotCommittedError(
+        f"Track {track.name!r} option was clicked but selection did not commit "
+        f"within {selection_commit_timeout_ms}ms",
+        place_id=track.place_id,
     )
 
 
@@ -135,3 +227,29 @@ def click_search_button(page: SpaPage) -> None:
     )
     if not clicked:
         raise UIReadinessError("Could not find the Great Walk Search button on the page")
+
+
+# Backwards-compatible alias used in older tests.
+def select_track_with_recovery(
+    page: SpaPage,
+    track: Track,
+    *,
+    site_url: str = SITE_URL,
+    greatwalk_hash: str = GREATWALK_HASH,
+    navigation_timeout_ms: int,
+    app_ready_timeout_ms: int,
+    recorder: NetworkRecorder | None = None,
+    selection_commit_timeout_ms: int = 8_000,
+) -> None:
+    if recorder is None:
+        recorder = NetworkRecorder()
+    commit_track_selection(
+        page,
+        track,
+        recorder,
+        site_url=site_url,
+        greatwalk_hash=greatwalk_hash,
+        navigation_timeout_ms=navigation_timeout_ms,
+        app_ready_timeout_ms=app_ready_timeout_ms,
+        selection_commit_timeout_ms=selection_commit_timeout_ms,
+    )

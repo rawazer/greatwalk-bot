@@ -168,13 +168,27 @@ List all Great Walk tracks. Example path: `.../false/isCashier`.
 
 #### `GET search/getgreatwalksearchdata/placeId/{placeId}`
 
-Search configuration and facility list for a selected Great Walk place.
+Search configuration and facility list for a selected Great Walk place. The SPA typically calls this **after** the user commits a track selection in the dropdown (not merely when the menu is open). GreatWalkBot treats a `200` response on this path as evidence that selection committed.
 
 #### `POST search/greatwalkplacefacility`
 
 Facility availability for Great Walk place. JSON body includes `PlaceId`, `StartDate`, `NightCount`, `CustomerClassificationId`, `SeasonId`.
 
+Triggered when the user clicks **Search** after a committed track selection. GreatWalkBot registers a response listener **before** clicking Search so an immediate response is not missed.
+
 See [itinerary-availability.md](itinerary-availability.md) for how GreatWalkBot validates complete itineraries from this response.
+
+### Observed SPA network flow (June 2026)
+
+| Step | Endpoint | When | Kepler | Milford / Routeburn |
+|------|----------|------|--------|---------------------|
+| 1 | `GET search/getgreatwalkplaces/...` | Page load | Yes | Yes |
+| 2 | `GET search/getgreatwalksearchdata/placeId/{id}` | After track **committed** | Yes (`872`) | Yes (`873` / `874`) when selection commits |
+| 3 | `POST search/greatwalkplacefacility` | After **Search** click | Yes | Yes when step 2 succeeded |
+
+**Milford / Routeburn failure mode (production):** Page loads and the track name is visible in the open dropdown, but step 2 never fires because the SPA did not commit the selection (often fixed-itinerary tracks need the dropdown button opened and desktop or mobile option id clicked). The bot then times out at step 3 with `AvailabilityRequestNotObservedError` or `TrackSelectionNotCommittedError` — not a WAF block unless challenge headers/HTML are present.
+
+**Candidate paths** monitored in diagnostics (`network_timeline` in `summary.json`): `search/greatwalkplacefacility`, `search/getgreatwalksearchdata`, `search/getgreatwalkfacilityinformation`, `search/grid`, `fd/availability/getbyunit`. URLs are stored as path-only with numeric segments and query values redacted.
 
 #### `GET search/getgreatwalkfacilityinformation/facilityId/{facilityId}/startDate/{YYYY-MM-DD}`
 

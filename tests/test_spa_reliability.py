@@ -11,6 +11,7 @@ import pytest
 from greatwalkbot.infra.errors import (
     FetchError,
     NavigationError,
+    TrackSelectionNotCommittedError,
     TrackSelectorError,
     UIReadinessError,
 )
@@ -20,12 +21,13 @@ from greatwalkbot.sources.diagnostics import (
     save_session_failure_diagnostics,
 )
 from greatwalkbot.sources.fetch_timing import TrackFetchTiming
+from greatwalkbot.sources.network_recorder import NetworkRecorder
 from greatwalkbot.sources.playwright import PlaywrightAvailabilitySource
 from greatwalkbot.sources.session_manager import SessionManager
 from greatwalkbot.sources.spa_navigation import (
+    commit_track_selection,
     navigate_to_site,
     open_great_walk_view,
-    select_track_with_recovery,
     wait_for_great_walk_ui,
 )
 from greatwalkbot.sources.spa_timing import (
@@ -39,9 +41,11 @@ MILFORD = Track("milford", "Milford Track", 873, 4, fixed_nights=3)
 class FakeSpaPage:
     def __init__(self) -> None:
         self.goto_calls: list[dict] = []
-        self.evaluate_calls: list[str] = []
+        self.evaluate_calls: list[tuple[str, object | None]] = []
         self.wait_for_function_calls: list[int] = []
-        self._click_results: list[bool] = [False, False]
+        self.wait_for_timeout_calls: list[int] = []
+        self._click_option_results: list[str | None] = []
+        self._selection_committed = False
         self.url = "https://bookings.doc.govt.nz/Web/Default.aspx"
         self._gwbot_console_messages: list[str] = []
         self._gwbot_page_errors: list[str] = []
@@ -51,17 +55,24 @@ class FakeSpaPage:
             {"url": url, "wait_until": wait_until, "timeout": timeout}
         )
 
-    def evaluate(self, expression: str) -> bool:
-        self.evaluate_calls.append(expression)
-        if "getElementById" in expression and "click" in expression:
-            if self._click_results:
-                return self._click_results.pop(0)
-            return False
+    def evaluate(self, expression: str, arg: object | None = None) -> object:
+        self.evaluate_calls.append((expression, arg))
+        if isinstance(arg, dict) and "trackName" in arg:
+            return self._selection_committed
+        if isinstance(arg, dict) and "optionIds" in arg:
+            if self._click_option_results:
+                return self._click_option_results.pop(0)
+            return None
+        if "dropdown" in expression and "click" in expression:
+            return True
         return True
 
     def wait_for_function(self, expression: str, *, timeout: int) -> bool:
         self.wait_for_function_calls.append(timeout)
         return True
+
+    def wait_for_timeout(self, timeout: int) -> None:
+        self.wait_for_timeout_calls.append(timeout)
 
     def title(self) -> str:
         return "Great Walk Bookings"
@@ -88,7 +99,9 @@ def test_wait_for_great_walk_ui_succeeds():
 
 def test_missing_selector_triggers_one_recovery_attempt():
     page = FakeSpaPage()
-    page._click_results = [False, True]
+    page._click_option_results = [None, "great-walk-5"]
+    page._selection_committed = True
+    recorder = NetworkRecorder()
     open_calls: list[int] = []
 
     def track_open(*_args, **kwargs):
@@ -98,11 +111,13 @@ def test_missing_selector_triggers_one_recovery_attempt():
         "greatwalkbot.sources.spa_navigation.open_great_walk_view",
         side_effect=track_open,
     ):
-        select_track_with_recovery(
+        commit_track_selection(
             page,
             MILFORD,
+            recorder,
             navigation_timeout_ms=30_000,
             app_ready_timeout_ms=15_000,
+            selection_commit_timeout_ms=50,
         )
 
     assert len(open_calls) == 1
@@ -110,21 +125,25 @@ def test_missing_selector_triggers_one_recovery_attempt():
 
 def test_missing_selector_after_recovery_raises_track_selector_error():
     page = FakeSpaPage()
-    page._click_results = [False, False]
+    page._click_option_results = [None, None]
+    recorder = NetworkRecorder()
 
     with patch("greatwalkbot.sources.spa_navigation.open_great_walk_view"):
-        with pytest.raises(TrackSelectorError, match="after one recovery"):
-            select_track_with_recovery(
+        with pytest.raises(TrackSelectorError, match="Could not click any track option"):
+            commit_track_selection(
                 page,
                 MILFORD,
+                recorder,
                 navigation_timeout_ms=30_000,
                 app_ready_timeout_ms=15_000,
+                selection_commit_timeout_ms=50,
             )
 
 
 def test_browser_restart_before_retry():
     session = MagicMock(spec=SessionManager)
     session.is_healthy.return_value = True
+    session.network = NetworkRecorder()
     source = PlaywrightAvailabilitySource(session_manager=session)
     snapshot = AvailabilitySnapshot(
         track=MILFORD,
@@ -153,6 +172,7 @@ def test_browser_restart_before_retry():
 def test_retry_loop_is_bounded():
     session = MagicMock(spec=SessionManager)
     session.is_healthy.return_value = True
+    session.network = NetworkRecorder()
     source = PlaywrightAvailabilitySource(session_manager=session)
 
     with patch.object(
@@ -197,16 +217,19 @@ def test_diagnostics_retention(tmp_path):
     assert len(remaining) == 3
 
 
-def test_wait_for_capture_raises_instead_of_long_sleep():
-    session = SessionManager.__new__(SessionManager)
-    session._captured_payload = None
-    page = MagicMock()
-    page.wait_for_timeout = MagicMock()
-    session._page = page
+def test_selection_not_committed_raises_typed_error():
+    page = FakeSpaPage()
+    page._click_option_results = ["great-walk-5", "great-walk-5"]
+    page._selection_committed = False
+    recorder = NetworkRecorder()
 
-    with patch("greatwalkbot.sources.session_manager.time.monotonic") as mono:
-        mono.side_effect = [0.0, 0.15, 0.25, 0.35]
-        with pytest.raises(FetchError, match="No availability data captured"):
-            session.wait_for_capture(300)
-
-    assert page.wait_for_timeout.called
+    with patch("greatwalkbot.sources.spa_navigation.open_great_walk_view"):
+        with pytest.raises(TrackSelectionNotCommittedError, match="did not commit"):
+            commit_track_selection(
+                page,
+                MILFORD,
+                recorder,
+                navigation_timeout_ms=30_000,
+                app_ready_timeout_ms=15_000,
+                selection_commit_timeout_ms=50,
+            )

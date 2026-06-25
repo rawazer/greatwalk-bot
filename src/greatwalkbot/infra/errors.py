@@ -37,3 +37,36 @@ class TrackSelectorError(RetryableError):
         self.track_slug = track_slug
         self.element_id = element_id
 
+
+class TrackSelectionNotCommittedError(RetryableError):
+    """Track option was clicked but SPA state did not commit the selection."""
+
+    def __init__(self, message: str, *, place_id: int | None = None) -> None:
+        super().__init__(message)
+        self.place_id = place_id
+
+
+class AvailabilityRequestNotObservedError(RetryableError):
+    """Expected availability request never appeared on the network timeline."""
+
+    def __init__(self, message: str, *, path: str | None = None) -> None:
+        super().__init__(message)
+        self.path = path
+
+
+class AvailabilityRequestFailedError(RetryableError):
+    """Availability request was observed but returned a non-success response."""
+
+    def __init__(self, message: str, *, path: str | None = None, status: int | None = None) -> None:
+        super().__init__(message)
+        self.path = path
+        self.status = status
+
+
+class WafChallengeSuspectedError(RetryableError):
+    """Concrete WAF/challenge indicators were observed."""
+
+    def __init__(self, message: str, *, signals: tuple[str, ...] = ()) -> None:
+        super().__init__(message)
+        self.signals = signals
+

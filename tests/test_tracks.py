@@ -9,6 +9,7 @@ def test_resolve_milford():
     track = resolve_track("milford")
     assert track.place_id == 873
     assert track.dropdown_element_id == "great-walk-5"
+    assert track.dropdown_option_ids == ("great-walk-5", "great-walk-mobile-5")
 
 
 def test_resolve_partial_name():
