@@ -72,11 +72,18 @@ def save_dom_inspection_artifacts(
     diagnostics_dir: Path | None = None,
     network_timeline: list[dict[str, Any]] | None = None,
     prefix: str = "inspect",
+    artifacts_dir: Path | None = None,
 ) -> DiagnosticArtifacts:
     """Save bounded DOM inspection report and screenshot (no secrets or full HTML)."""
     base_dir = diagnostics_dir or DEFAULT_DIAGNOSTICS_DIR
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    run_dir = base_dir / f"{timestamp}_{prefix}_{track_slug}"
+    if artifacts_dir is not None:
+        run_dir = artifacts_dir
+        timestamp = run_dir.name.split("_")[0] if "_" in run_dir.name else datetime.now(
+            timezone.utc
+        ).strftime("%Y%m%dT%H%M%SZ")
+    else:
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        run_dir = base_dir / f"{timestamp}_{prefix}_{track_slug}"
     run_dir.mkdir(parents=True, exist_ok=True)
 
     summary: dict[str, Any] = {
@@ -105,6 +112,12 @@ def save_dom_inspection_artifacts(
         bounded_report["date_picker_elements"] = list(dom_report["date_picker_elements"])[:30]
     if dom_report.get("form_state"):
         bounded_report["form_state"] = dom_report["form_state"]
+    if dom_report.get("people_dropdown"):
+        bounded_report["people_dropdown"] = dom_report["people_dropdown"]
+    if dom_report.get("date_picker_popup"):
+        bounded_report["date_picker_popup"] = dom_report["date_picker_popup"]
+    if dom_report.get("date_picker_navigation"):
+        bounded_report["date_picker_navigation"] = dom_report["date_picker_navigation"]
     if not bounded_report:
         bounded_report = {"summary": discovery_summary or {}}
     dom_report_path.write_text(json.dumps(bounded_report, indent=2) + "\n", encoding="utf-8")

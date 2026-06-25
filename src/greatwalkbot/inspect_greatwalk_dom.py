@@ -5,10 +5,16 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from greatwalkbot.models import Track
-from greatwalkbot.sources.diagnostics import DiagnosticArtifacts, save_dom_inspection_artifacts
+from greatwalkbot.sources.diagnostics import (
+    DEFAULT_DIAGNOSTICS_DIR,
+    DiagnosticArtifacts,
+    save_dom_inspection_artifacts,
+)
 from greatwalkbot.sources.gw_desktop_date_picker_popup import inspect_date_picker_navigation
 from greatwalkbot.sources.gw_desktop_people_dropdown import inspect_people_dropdown
 from greatwalkbot.sources.gw_desktop_form import (
@@ -151,8 +157,16 @@ def run_inspect_greatwalk_dom(
             "class": binding.root_class,
         }
 
+        inspect_timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        inspect_dir = DEFAULT_DIAGNOSTICS_DIR / f"{inspect_timestamp}_inspect_{track.slug}"
+        inspect_dir.mkdir(parents=True, exist_ok=True)
+
         dropdown_options = discover_desktop_dropdown_options(page)
-        people_dropdown_inspection = inspect_people_dropdown(page, binding)
+        people_dropdown_inspection = inspect_people_dropdown(
+            page,
+            binding,
+            screenshot_path=inspect_dir / "people_dropdown_open.png",
+        )
         date_picker_elements: list[dict[str, Any]] = []
         if open_date_picker:
             open_desktop_date_picker(page)
@@ -203,6 +217,7 @@ def run_inspect_greatwalk_dom(
             discovery_summary=summary,
             network_timeline=recorder.timeline_dicts(),
             prefix="inspect",
+            artifacts_dir=inspect_dir,
         )
 
         return DomInspectionReport(
