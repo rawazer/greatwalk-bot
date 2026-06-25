@@ -9,6 +9,7 @@ from datetime import date
 from typing import Any, Protocol
 
 from greatwalkbot.infra.errors import (
+    GreatWalkControlNotClickableError,
     GreatWalkControlNotFoundError,
     GreatWalkDateControlDiscoveryIncompleteError,
     GreatWalkDesktopRootError,
@@ -16,6 +17,7 @@ from greatwalkbot.infra.errors import (
 )
 from greatwalkbot.models import Track
 from greatwalkbot.sources.gw_active_form import normalize_date_string
+from greatwalkbot.sources.spa_timing import DEFAULT_CONTROL_CLICKABLE_TIMEOUT_MS
 
 DESKTOP_ROOT_SELECTOR = 'div[role="search"].themeTopsearch:visible'
 
@@ -251,6 +253,135 @@ _SET_DATE_JS = """
 }
 """
 
+_PROBE_CLICK_READINESS_JS = """
+({ rootSelector, targetSelector }) => {
+    const MAX_ANCESTOR = 5;
+    const LOADING_MARKERS = ['fetching content', 'loading', 'please wait'];
+
+    function isVisible(el) {
+        if (!el) return false;
+        const style = window.getComputedStyle(el);
+        if (style.display === 'none' || style.visibility === 'hidden') return false;
+        const rect = el.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+    }
+
+    function describe(el) {
+        if (!el) return null;
+        const style = window.getComputedStyle(el);
+        const rect = el.getBoundingClientRect();
+        return {
+            tag: el.tagName,
+            id: el.id || null,
+            class: (el.className || '').toString().slice(0, 120) || null,
+            role: el.getAttribute('role'),
+            aria_label: el.getAttribute('aria-label'),
+            aria_busy: el.getAttribute('aria-busy'),
+            text: (el.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 80) || null,
+            pointer_events: style.pointerEvents,
+            position: style.position,
+            z_index: style.zIndex,
+            opacity: style.opacity,
+            display: style.display,
+            visibility: style.visibility,
+            rect: {
+                x: Math.round(rect.x),
+                y: Math.round(rect.y),
+                width: Math.round(rect.width),
+                height: Math.round(rect.height),
+            },
+        };
+    }
+
+    function ancestors(el) {
+        const chain = [];
+        let node = el;
+        for (let i = 0; i < MAX_ANCESTOR && node; i++) {
+            chain.push({
+                tag: node.tagName,
+                id: node.id || null,
+                class: (node.className || '').toString().slice(0, 80) || null,
+                role: node.getAttribute('role'),
+            });
+            node = node.parentElement;
+        }
+        return chain;
+    }
+
+    const roots = Array.from(document.querySelectorAll('div[role="search"]'))
+        .filter(el => {
+            const cls = (el.className || '').toString();
+            return cls.includes('themeTopsearch') && isVisible(el);
+        });
+
+    const root = roots.length === 1 ? roots[0] : null;
+    if (!root) {
+        return { found: false, clickable: false, desktop_root_count: roots.length };
+    }
+
+    let target = null;
+    if (targetSelector.includes('has-text')) {
+        const buttons = Array.from(root.querySelectorAll('button')).filter(isVisible);
+        target = buttons.find(b => /^search$/i.test((b.textContent || '').trim())) || null;
+    } else {
+        target = root.querySelector(targetSelector);
+    }
+
+    if (!target || !isVisible(target)) {
+        return {
+            found: false,
+            clickable: false,
+            target: target ? describe(target) : null,
+            desktop_root_count: roots.length,
+            root_class: (root.className || '').toString().slice(0, 120),
+            control_selector: targetSelector,
+        };
+    }
+
+    const rect = target.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const hit = document.elementFromPoint(cx, cy);
+    const clickable = !!(hit && (target === hit || target.contains(hit)));
+
+    let loadingOverlay = null;
+    const overlays = root.querySelectorAll(
+        '[aria-busy="true"], .loading, .spinner, [class*="loading"]'
+    );
+    for (const el of overlays) {
+        if (!isVisible(el)) continue;
+        const text = (el.textContent || '').toLowerCase();
+        if (LOADING_MARKERS.some(m => text.includes(m))) {
+            loadingOverlay = describe(el);
+            break;
+        }
+    }
+    if (!loadingOverlay && LOADING_MARKERS.some(m => (root.textContent || '').toLowerCase().includes(m))) {
+        loadingOverlay = { type: 'root-text-loading' };
+    }
+
+    let interceptor = null;
+    if (!clickable && hit && !target.contains(hit)) {
+        interceptor = describe(hit);
+    }
+
+    return {
+        found: true,
+        clickable: clickable && !loadingOverlay,
+        control_selector: targetSelector,
+        center: { x: Math.round(cx), y: Math.round(cy) },
+        target: describe(target),
+        hit: hit ? describe(hit) : null,
+        interceptor,
+        target_ancestors: ancestors(target),
+        interceptor_ancestors: hit ? ancestors(hit) : [],
+        loading_overlay: loadingOverlay,
+        root_class: (root.className || '').toString().slice(0, 120),
+        desktop_root_count: roots.length,
+    };
+}
+"""
+
 
 class DesktopFormPage(Protocol):
     def locator(self, selector: str) -> Any: ...
@@ -305,15 +436,193 @@ def discover_date_picker_elements(page: DesktopFormPage) -> list[dict[str, Any]]
     return list(raw) if isinstance(raw, list) else []
 
 
-def open_desktop_date_picker(page: DesktopFormPage) -> None:
-    root = page.locator(DESKTOP_ROOT_SELECTOR)
-    btn = root.locator(DATE_BUTTON_SELECTOR)
-    if btn.count() == 0:
+def _sanitize_click_diagnostics(diag: dict[str, Any]) -> dict[str, Any]:
+    allowed = (
+        "found",
+        "clickable",
+        "control_selector",
+        "center",
+        "target",
+        "hit",
+        "interceptor",
+        "target_ancestors",
+        "interceptor_ancestors",
+        "loading_overlay",
+        "root_class",
+        "desktop_root_count",
+    )
+    return {key: diag[key] for key in allowed if key in diag}
+
+
+def probe_click_readiness(
+    page: DesktopFormPage,
+    binding: DesktopRootBinding,
+    target_selector: str,
+) -> dict[str, Any]:
+    raw = page.evaluate(
+        _PROBE_CLICK_READINESS_JS,
+        {"rootSelector": binding.selector, "targetSelector": target_selector},
+    )
+    return raw if isinstance(raw, dict) else {"found": False, "clickable": False}
+
+
+def _interceptor_is_benign_widget_overlay(diag: dict[str, Any]) -> bool:
+    if diag.get("loading_overlay"):
+        return True
+    root_class = (diag.get("root_class") or "").lower()
+    if "selectedpark" in root_class:
+        return True
+    for key in ("interceptor", "hit"):
+        el = diag.get(key) or {}
+        cls = (el.get("class") or "").lower()
+        role = el.get("role") or ""
+        text = (el.get("text") or "").lower()
+        if role == "search" and "themeTopsearch" in cls:
+            return True
+        if any(marker in text for marker in ("fetching content", "loading", "please wait")):
+            return True
+        if "loading" in cls or "spinner" in cls:
+            return True
+        if el.get("aria_busy") == "true":
+            return True
+    return False
+
+
+def _is_pointer_interception_error(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return "intercepts pointer" in msg or ("intercept" in msg and "pointer" in msg)
+
+
+def wait_for_control_clickable(
+    page: DesktopFormPage,
+    binding: DesktopRootBinding,
+    target_selector: str,
+    control_name: str,
+    *,
+    timeout_ms: int | None = None,
+    root_change: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    timeout = timeout_ms or DEFAULT_CONTROL_CLICKABLE_TIMEOUT_MS
+    deadline = time.monotonic() + (timeout / 1000.0)
+    last_diag: dict[str, Any] = {"found": False, "clickable": False}
+    while time.monotonic() < deadline:
+        last_diag = probe_click_readiness(page, binding, target_selector)
+        if last_diag.get("clickable"):
+            return last_diag
+        page.wait_for_timeout(100)
+    raise GreatWalkControlNotClickableError(
+        f"Desktop control {control_name!r} is not clickable at center after {timeout}ms",
+        control=control_name,
+        click_diagnostics=_sanitize_click_diagnostics(last_diag),
+        root_change=root_change,
+    )
+
+
+def click_desktop_control(
+    page: DesktopFormPage,
+    binding: DesktopRootBinding,
+    target_selector: str,
+    control_name: str,
+    *,
+    timeout_ms: int | None = None,
+    root_change: dict[str, Any] | None = None,
+) -> None:
+    timeout = timeout_ms or DEFAULT_CONTROL_CLICKABLE_TIMEOUT_MS
+    wait_for_control_clickable(
+        page,
+        binding,
+        target_selector,
+        control_name,
+        timeout_ms=timeout,
+        root_change=root_change,
+    )
+    root = page.locator(binding.selector)
+    locator = (
+        root.locator(target_selector)
+        if target_selector == SEARCH_BUTTON_SELECTOR
+        else root.locator(target_selector).first
+    )
+    for attempt in range(2):
+        try:
+            locator.click(timeout=min(5_000, timeout))
+            return
+        except Exception as exc:
+            if not _is_pointer_interception_error(exc) and "Timeout" not in str(exc):
+                raise
+            last_diag = probe_click_readiness(page, binding, target_selector)
+            if attempt == 0 and _interceptor_is_benign_widget_overlay(last_diag):
+                wait_for_control_clickable(
+                    page,
+                    binding,
+                    target_selector,
+                    control_name,
+                    timeout_ms=timeout,
+                    root_change=root_change,
+                )
+                binding = resolve_desktop_great_walk_root(page)
+                root = page.locator(binding.selector)
+                locator = (
+                    root.locator(target_selector)
+                    if target_selector == SEARCH_BUTTON_SELECTOR
+                    else root.locator(target_selector).first
+                )
+                continue
+            raise GreatWalkControlNotClickableError(
+                f"Desktop control {control_name!r} click blocked by overlay",
+                control=control_name,
+                click_diagnostics=_sanitize_click_diagnostics(last_diag),
+                root_change=root_change,
+            ) from exc
+
+
+def refresh_desktop_root_binding(
+    page: DesktopFormPage,
+    prior: DesktopRootBinding | None,
+) -> tuple[DesktopRootBinding, dict[str, Any]]:
+    new = resolve_desktop_great_walk_root(page)
+    current = {
+        "selector": new.selector,
+        "id": new.root_id,
+        "class": new.root_class,
+    }
+    prior_info: dict[str, Any] | None = None
+    root_replaced = False
+    if prior is not None:
+        prior_info = {
+            "selector": prior.selector,
+            "id": prior.root_id,
+            "class": prior.root_class,
+        }
+        root_replaced = (
+            prior.root_id != new.root_id or prior.root_class != new.root_class
+        )
+    return new, {
+        "root_replaced": root_replaced,
+        "prior_root": prior_info,
+        "current_root": current,
+    }
+
+
+def open_desktop_date_picker(
+    page: DesktopFormPage,
+    binding: DesktopRootBinding | None = None,
+    *,
+    root_change: dict[str, Any] | None = None,
+) -> None:
+    binding = binding or resolve_desktop_great_walk_root(page)
+    root = page.locator(binding.selector)
+    if root.locator(DATE_BUTTON_SELECTOR).count() == 0:
         raise GreatWalkControlNotFoundError(
             "Desktop start date button not found",
             control="start_date",
         )
-    btn.first.click()
+    click_desktop_control(
+        page,
+        binding,
+        DATE_BUTTON_SELECTOR,
+        "start_date",
+        root_change=root_change,
+    )
     page.wait_for_timeout(300)
 
 
@@ -404,10 +713,21 @@ def desktop_track_option_id(track: Track) -> str:
     return f"great-walk-{track.list_index + 1}"
 
 
-def select_desktop_track(page: DesktopFormPage, track: Track) -> None:
-    binding = resolve_desktop_great_walk_root(page)
-    root = page.locator(binding.selector)
-    root.locator(TRACK_BUTTON_SELECTOR).first.click()
+def select_desktop_track(
+    page: DesktopFormPage,
+    track: Track,
+    binding: DesktopRootBinding | None = None,
+    *,
+    root_change: dict[str, Any] | None = None,
+) -> None:
+    binding = binding or resolve_desktop_great_walk_root(page)
+    click_desktop_control(
+        page,
+        binding,
+        TRACK_BUTTON_SELECTOR,
+        "track",
+        root_change=root_change,
+    )
     page.wait_for_timeout(200)
     option_id = desktop_track_option_id(track)
     clicked = page.evaluate(
@@ -451,25 +771,53 @@ def _click_dropdown_option(
     page.wait_for_timeout(200)
 
 
-def select_desktop_nights(page: DesktopFormPage, nights: int) -> None:
-    resolve_desktop_great_walk_root(page)
-    root = page.locator(DESKTOP_ROOT_SELECTOR)
-    root.locator(NIGHTS_BUTTON_SELECTOR).first.click()
+def select_desktop_nights(
+    page: DesktopFormPage,
+    nights: int,
+    binding: DesktopRootBinding | None = None,
+    *,
+    root_change: dict[str, Any] | None = None,
+) -> None:
+    binding = binding or resolve_desktop_great_walk_root(page)
+    click_desktop_control(
+        page,
+        binding,
+        NIGHTS_BUTTON_SELECTOR,
+        "nights",
+        root_change=root_change,
+    )
     page.wait_for_timeout(200)
     _click_dropdown_option(page, list_selector=NIGHTS_LIST_SELECTOR, match_number=nights)
 
 
-def select_desktop_people(page: DesktopFormPage, people_size: int) -> None:
-    resolve_desktop_great_walk_root(page)
-    root = page.locator(DESKTOP_ROOT_SELECTOR)
-    root.locator(PEOPLE_BUTTON_SELECTOR).first.click()
+def select_desktop_people(
+    page: DesktopFormPage,
+    people_size: int,
+    binding: DesktopRootBinding | None = None,
+    *,
+    root_change: dict[str, Any] | None = None,
+) -> None:
+    binding = binding or resolve_desktop_great_walk_root(page)
+    click_desktop_control(
+        page,
+        binding,
+        PEOPLE_BUTTON_SELECTOR,
+        "people",
+        root_change=root_change,
+    )
     page.wait_for_timeout(200)
     _click_dropdown_option(page, list_selector=PEOPLE_LIST_SELECTOR, match_number=people_size)
 
 
-def set_desktop_start_date(page: DesktopFormPage, target: date) -> None:
-    resolve_desktop_great_walk_root(page)
-    open_desktop_date_picker(page)
+def set_desktop_start_date(
+    page: DesktopFormPage,
+    target: date,
+    binding: DesktopRootBinding | None = None,
+    *,
+    root_change: dict[str, Any] | None = None,
+) -> None:
+    binding = binding or resolve_desktop_great_walk_root(page)
+    open_desktop_date_picker(page, binding, root_change=root_change)
     result = page.evaluate(_SET_DATE_JS, target.isoformat())
     if not isinstance(result, dict) or not result.get("ok"):
         reason = result.get("reason") if isinstance(result, dict) else "unknown"
@@ -481,8 +829,13 @@ def set_desktop_start_date(page: DesktopFormPage, target: date) -> None:
     page.wait_for_timeout(300)
 
 
-def click_desktop_search_button(page: DesktopFormPage) -> None:
-    binding = resolve_desktop_great_walk_root(page)
+def click_desktop_search_button(
+    page: DesktopFormPage,
+    binding: DesktopRootBinding | None = None,
+    *,
+    root_change: dict[str, Any] | None = None,
+) -> None:
+    binding = binding or resolve_desktop_great_walk_root(page)
     root = page.locator(binding.selector)
     btn = root.locator(SEARCH_BUTTON_SELECTOR)
     if btn.count() == 0:
@@ -490,10 +843,15 @@ def click_desktop_search_button(page: DesktopFormPage) -> None:
             "Search button not found within desktop Great Walk root",
             control="search",
         )
-    search = btn.first
-    if not search.is_enabled():
+    if not btn.first.is_enabled():
         raise SearchFormValidationError("Desktop Great Walk Search button is disabled")
-    search.click()
+    click_desktop_control(
+        page,
+        binding,
+        SEARCH_BUTTON_SELECTOR,
+        "search",
+        root_change=root_change,
+    )
 
 
 def _raise_if_not_actionable(state: dict[str, Any], *, phase: str) -> None:
@@ -568,14 +926,30 @@ def prepare_desktop_search_form(
     )
     _raise_if_not_actionable(state, phase="before search")
 
+    root_change: dict[str, Any] | None = None
     if not state.get("track_control", {}).get("matches_requested"):
-        select_desktop_track(page, track)
+        select_desktop_track(page, track, binding)
+        binding, root_change = refresh_desktop_root_binding(page, binding)
 
-    select_desktop_nights(page, nights)
-    select_desktop_people(page, people_size)
+    binding, refresh_info = refresh_desktop_root_binding(page, binding)
+    if root_change is None:
+        root_change = refresh_info
+    elif refresh_info.get("root_replaced"):
+        root_change = {**root_change, **refresh_info}
+
+    wait_for_control_clickable(
+        page,
+        binding,
+        NIGHTS_BUTTON_SELECTOR,
+        "nights",
+        root_change=root_change,
+    )
+
+    select_desktop_nights(page, nights, binding, root_change=root_change)
+    select_desktop_people(page, people_size, binding, root_change=root_change)
 
     try:
-        set_desktop_start_date(page, start_date)
+        set_desktop_start_date(page, start_date, binding, root_change=root_change)
     except GreatWalkDateControlDiscoveryIncompleteError:
         raise
     except GreatWalkControlNotFoundError as exc:
@@ -617,6 +991,8 @@ def prepare_desktop_search_form(
         )
 
     _raise_if_not_actionable(state, phase="after setting form values")
+    if root_change is not None:
+        state["desktop_root_refresh"] = root_change
     return state
 
 

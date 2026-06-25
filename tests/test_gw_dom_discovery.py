@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from greatwalkbot.debug_search import run_debug_search
+from debug_search_helpers import patch_refresh_desktop_root
 from greatwalkbot.domain.dates import DateRange, TravelWindow
 from greatwalkbot.domain.party import Party
 from greatwalkbot.domain.plan import TripPlan
@@ -309,32 +310,37 @@ def test_debug_search_reports_date_discovery_incomplete(tmp_path: Path):
                                 count=1,
                             ),
                         ):
-                            with patch(
-                                "greatwalkbot.debug_search.capture_desktop_selection_state",
-                                return_value={"visible_selection_committed": True},
-                            ):
+                            binding = DesktopRootBinding(
+                                selector='div[role="search"].themeTopsearch:visible',
+                                count=1,
+                            )
+                            with patch_refresh_desktop_root(binding):
                                 with patch(
-                                    "greatwalkbot.debug_search.prepare_search_form",
-                                    side_effect=GreatWalkDateControlDiscoveryIncompleteError(
-                                        "date unknown",
-                                        date_iso="2026-12-03",
-                                    ),
+                                    "greatwalkbot.debug_search.capture_desktop_selection_state",
+                                    return_value={"visible_selection_committed": True},
                                 ):
                                     with patch(
-                                        "greatwalkbot.debug_search._save_date_picker_diagnostics"
-                                    ) as save_diag:
-                                        from greatwalkbot.sources.diagnostics import DiagnosticArtifacts
+                                        "greatwalkbot.debug_search.prepare_search_form",
+                                        side_effect=GreatWalkDateControlDiscoveryIncompleteError(
+                                            "date unknown",
+                                            date_iso="2026-12-03",
+                                        ),
+                                    ):
+                                        with patch(
+                                            "greatwalkbot.debug_search._save_date_picker_diagnostics"
+                                        ) as save_diag:
+                                            from greatwalkbot.sources.diagnostics import DiagnosticArtifacts
 
-                                        save_diag.return_value = DiagnosticArtifacts(
-                                            directory=tmp_path / "dom_diag",
-                                            summary_path=tmp_path / "dom_diag" / "summary.json",
-                                            screenshot_path=None,
-                                        )
-                                        report = run_debug_search(
-                                            plan,
-                                            ROUTEBURN,
-                                            start_date=date(2026, 12, 3),
-                                        )
+                                            save_diag.return_value = DiagnosticArtifacts(
+                                                directory=tmp_path / "dom_diag",
+                                                summary_path=tmp_path / "dom_diag" / "summary.json",
+                                                screenshot_path=None,
+                                            )
+                                            report = run_debug_search(
+                                                plan,
+                                                ROUTEBURN,
+                                                start_date=date(2026, 12, 3),
+                                            )
 
     assert report.result == "failed"
     assert report.error_type == "GreatWalkDateControlDiscoveryIncompleteError"
@@ -367,23 +373,24 @@ def test_debug_search_success_when_desktop_form_ready():
                             "greatwalkbot.debug_search.resolve_desktop_great_walk_root",
                             return_value=binding,
                         ):
-                            with patch(
-                                "greatwalkbot.debug_search.capture_desktop_selection_state",
-                                return_value={"visible_selection_committed": True},
-                            ):
+                            with patch_refresh_desktop_root(binding):
                                 with patch(
-                                    "greatwalkbot.debug_search.capture_search_form_state",
-                                    return_value={"nights_control": {"raw_value": "2"}},
+                                    "greatwalkbot.debug_search.capture_desktop_selection_state",
+                                    return_value={"visible_selection_committed": True},
                                 ):
                                     with patch(
-                                        "greatwalkbot.debug_search.prepare_search_form",
+                                        "greatwalkbot.debug_search.capture_search_form_state",
                                         return_value={"nights_control": {"raw_value": "2"}},
                                     ):
-                                        report = run_debug_search(
-                                            plan,
-                                            ROUTEBURN,
-                                            start_date=date(2026, 12, 3),
-                                        )
+                                        with patch(
+                                            "greatwalkbot.debug_search.prepare_search_form",
+                                            return_value={"nights_control": {"raw_value": "2"}},
+                                        ):
+                                            report = run_debug_search(
+                                                plan,
+                                                ROUTEBURN,
+                                                start_date=date(2026, 12, 3),
+                                            )
 
     assert report.result == "success"
     session.capture_availability_after_search.assert_called_once()

@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from greatwalkbot.debug_search import run_debug_search
+from debug_search_helpers import patch_refresh_desktop_root
 from greatwalkbot.domain.dates import DateRange, TravelWindow
 from greatwalkbot.domain.party import Party
 from greatwalkbot.domain.plan import TripPlan
@@ -214,23 +215,24 @@ def test_debug_cli_does_not_use_telegram_or_dedupe():
                             "greatwalkbot.debug_search.resolve_desktop_great_walk_root",
                             return_value=DESKTOP_BINDING,
                         ):
-                            with patch(
-                                "greatwalkbot.debug_search.capture_desktop_selection_state",
-                                return_value={"visible_selection_committed": True},
-                            ):
+                            with patch_refresh_desktop_root(DESKTOP_BINDING):
                                 with patch(
-                                    "greatwalkbot.debug_search.capture_search_form_state",
-                                    return_value={"nights_control": {"raw_value": "2"}},
+                                    "greatwalkbot.debug_search.capture_desktop_selection_state",
+                                    return_value={"visible_selection_committed": True},
                                 ):
                                     with patch(
-                                        "greatwalkbot.debug_search.prepare_search_form",
+                                        "greatwalkbot.debug_search.capture_search_form_state",
                                         return_value={"nights_control": {"raw_value": "2"}},
                                     ):
-                                        report = run_debug_search(
-                                            plan,
-                                            ROUTEBURN,
-                                            start_date=date(2026, 12, 3),
-                                        )
+                                        with patch(
+                                            "greatwalkbot.debug_search.prepare_search_form",
+                                            return_value={"nights_control": {"raw_value": "2"}},
+                                        ):
+                                            report = run_debug_search(
+                                                plan,
+                                                ROUTEBURN,
+                                                start_date=date(2026, 12, 3),
+                                            )
 
     assert report.result == "success"
     assert report.nights == 2

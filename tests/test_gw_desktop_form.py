@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from greatwalkbot.debug_search import run_debug_search
+from debug_search_helpers import patch_refresh_desktop_root
 from greatwalkbot.domain.dates import DateRange, TravelWindow
 from greatwalkbot.domain.party import Party
 from greatwalkbot.domain.plan import TripPlan
@@ -86,6 +87,19 @@ class DesktopPage:
         self._locators: dict[str, MagicMock] = {}
 
     def evaluate(self, expression: str, arg=None) -> object:
+        if "elementFromPoint" in expression:
+            return {
+                "found": True,
+                "clickable": getattr(self, "clickable", True),
+                "control_selector": (arg or {}).get("targetSelector"),
+                "target": {
+                    "tag": "BUTTON",
+                    "id": "great-walk-night-dropdown-button",
+                    "pointer_events": "auto",
+                },
+                "root_class": "themeTopsearch",
+                "desktop_root_count": 1,
+            }
         if "desktop_root_count" in expression or "readBtn" in expression:
             return self.state
         if "listSelector" in expression or "matchNumber" in expression:
@@ -314,26 +328,27 @@ def test_debug_search_uses_desktop_prepare_and_people_size():
                             "greatwalkbot.debug_search.resolve_desktop_great_walk_root",
                             return_value=binding,
                         ):
-                            with patch(
-                                "greatwalkbot.debug_search.capture_desktop_selection_state",
-                                return_value={"visible_selection_committed": True},
-                            ):
+                            with patch_refresh_desktop_root(binding):
                                 with patch(
-                                    "greatwalkbot.debug_search.capture_search_form_state",
-                                    return_value={"people_control": {"matches_requested": True}},
+                                    "greatwalkbot.debug_search.capture_desktop_selection_state",
+                                    return_value={"visible_selection_committed": True},
                                 ):
                                     with patch(
-                                        "greatwalkbot.debug_search.prepare_search_form",
-                                        return_value={
-                                            "people_control": {"matches_requested": True},
-                                            "nights_control": {"matches_requested": True},
-                                        },
-                                    ) as prepare:
-                                        report = run_debug_search(
-                                            plan,
-                                            ROUTEBURN,
-                                            start_date=date(2026, 12, 3),
-                                        )
+                                        "greatwalkbot.debug_search.capture_search_form_state",
+                                        return_value={"people_control": {"matches_requested": True}},
+                                    ):
+                                        with patch(
+                                            "greatwalkbot.debug_search.prepare_search_form",
+                                            return_value={
+                                                "people_control": {"matches_requested": True},
+                                                "nights_control": {"matches_requested": True},
+                                            },
+                                        ) as prepare:
+                                            report = run_debug_search(
+                                                plan,
+                                                ROUTEBURN,
+                                                start_date=date(2026, 12, 3),
+                                            )
     assert report.result == "success"
     assert report.people_size == 2
     prepare.assert_called_once()

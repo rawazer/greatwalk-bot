@@ -119,6 +119,25 @@ class GreatWalkControlNotFoundError(RetryableError):
         self.form_state = form_state
 
 
+class GreatWalkControlNotClickableError(RetryableError):
+    """Desktop control is visible but not receiving pointer events at its center."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        control: str | None = None,
+        click_diagnostics: dict | None = None,
+        root_change: dict | None = None,
+        form_state: dict | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.control = control
+        self.click_diagnostics = click_diagnostics
+        self.root_change = root_change
+        self.form_state = form_state
+
+
 class GreatWalkDesktopRootError(RetryableError):
     """Desktop Great Walk search widget root is missing or ambiguous."""
 

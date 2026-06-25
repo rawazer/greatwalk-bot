@@ -190,6 +190,11 @@ def save_session_failure_diagnostics(
     elif isinstance(form_state, dict) and form_state.get("active_form_inventory"):
         summary["active_form_inventory"] = form_state["active_form_inventory"][:40]
 
+    if hasattr(error, "click_diagnostics") and getattr(error, "click_diagnostics", None):
+        summary["click_interception"] = getattr(error, "click_diagnostics")
+    if hasattr(error, "root_change") and getattr(error, "root_change", None):
+        summary["desktop_root_refresh"] = getattr(error, "root_change")
+
     screenshot_path: Path | None = None
     if page is not None:
         try:

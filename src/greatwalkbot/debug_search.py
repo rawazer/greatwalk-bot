@@ -27,6 +27,7 @@ from greatwalkbot.sources.gw_desktop_form import (
     capture_desktop_selection_state,
     discover_date_picker_elements,
     discover_desktop_dropdown_options,
+    refresh_desktop_root_binding,
     resolve_desktop_great_walk_root,
 )
 from greatwalkbot.sources.search_form import capture_search_form_state, prepare_search_form
@@ -226,18 +227,20 @@ def run_debug_search(
         ) or recorder.saw_selection_metadata(track.place_id)
 
         binding = resolve_desktop_great_walk_root(page)
-        desktop_root = {
-            "selector": binding.selector,
-            "count": binding.count,
-            "id": binding.root_id,
-            "class": binding.root_class,
-        }
 
         selection_state = capture_desktop_selection_state(
             page,
             track,
             backend_metadata_confirmed=metadata_confirmed,
         )
+        binding, root_refresh = refresh_desktop_root_binding(page, binding)
+        desktop_root = {
+            "selector": binding.selector,
+            "count": binding.count,
+            "id": binding.root_id,
+            "class": binding.root_class,
+            "root_refresh": root_refresh,
+        }
         selection_committed = bool(
             selection_state.get("backend_metadata_confirmed")
             or selection_state.get("visible_selection_committed")
