@@ -13,6 +13,16 @@ from greatwalkbot.infra.errors import (
     GreatWalkDateUnavailableError,
 )
 from greatwalkbot.sources.gw_active_form import normalize_date_string
+from greatwalkbot.sources.gw_desktop_date_picker_popup import (
+    DesktopDatePickerPopup,
+    click_popup_navigation_control,
+    discover_popup_navigation_raw,
+    inspect_date_picker_navigation,
+    navigation_diagnostics,
+    resolve_calendar_navigation_controls,
+    resolve_visible_desktop_date_picker,
+    sample_popup_day_labels,
+)
 
 DATE_MOBILE_SELECTOR = "#great-walk-start-date-mobile"
 DATE_PICKER_MONTH_CONTAINER = ".react-datepicker__month-container"
@@ -180,7 +190,16 @@ def day_label_fingerprint(labels: list[str]) -> dict[str, Any]:
     }
 
 
-def _day_button_locator(page: DatePickerPage, aria_label: str) -> Any:
+def _day_button_locator(
+    page: DatePickerPage,
+    aria_label: str,
+    popup: DesktopDatePickerPopup | None = None,
+) -> Any:
+    if popup is not None:
+        escaped = aria_label.replace("\\", "\\\\").replace('"', '\\"')
+        scoped = popup.locator.locator(f'[aria-label="{escaped}"]')
+        if scoped.count() > 0:
+            return scoped.first
     if hasattr(page, "get_by_role"):
         return page.get_by_role("button", name=aria_label, exact=True)
     escaped = aria_label.replace("\\", "\\\\").replace('"', '\\"')
@@ -188,15 +207,84 @@ def _day_button_locator(page: DatePickerPage, aria_label: str) -> Any:
 
 
 def read_date_picker_state(page: DatePickerPage) -> dict[str, Any]:
-    raw = page.evaluate(_READ_DATE_PICKER_STATE_JS)
-    return raw if isinstance(raw, dict) else {"open": False, "container_count": 0}
+    try:
+        popup = resolve_visible_desktop_date_picker(page)
+        month_text, labels = sample_popup_day_labels(page)
+        discovery = discover_popup_navigation_raw(page)
+        controls = resolve_calendar_navigation_controls(discovery)
+        return {
+            "open": True,
+            "container_count": 1,
+            "month_text": month_text,
+            "has_next": controls.next is not None,
+            "has_prev": controls.previous is not None,
+            "popup": popup.descriptor.get("popup"),
+            "day_label_count": len(labels),
+        }
+    except GreatWalkDatePickerError:
+        return {"open": False, "container_count": 0}
+
+
+def _wait_for_fingerprint_change(
+    page: DatePickerPage,
+    fingerprint_before: dict[str, Any],
+    *,
+    timeout_ms: int = 3_000,
+) -> tuple[dict[str, Any], list[str]]:
+    deadline = time.monotonic() + (timeout_ms / 1000.0)
+    while time.monotonic() < deadline:
+        labels = sample_visible_day_labels(page)
+        fingerprint_after = day_label_fingerprint(labels)
+        if fingerprint_after != fingerprint_before:
+            return fingerprint_after, labels
+        page.wait_for_timeout(50)
+    labels = sample_visible_day_labels(page)
+    return day_label_fingerprint(labels), labels
+
+
+def _raise_missing_navigation(
+    page: DatePickerPage,
+    *,
+    direction: Literal["next", "prev"],
+    target: date,
+    date_iso: str,
+    navigation_steps: list[dict[str, Any]],
+    fingerprint_before: dict[str, Any] | None = None,
+    fingerprint_after: dict[str, Any] | None = None,
+) -> None:
+    raise GreatWalkDatePickerError(
+        f"Date-picker {direction}-month navigation control is missing",
+        date_iso=date_iso,
+        calendar_diagnostics=navigation_diagnostics(
+            page,
+            choose_label=build_choose_aria_label(target),
+            unavailable_label=build_unavailable_aria_label(target),
+            navigation_steps=navigation_steps,
+            fingerprint_before=fingerprint_before,
+            fingerprint_after=fingerprint_after,
+        ),
+    )
+
+
+def _click_popup_month_navigation(
+    page: DatePickerPage,
+    direction: Literal["next", "prev"],
+) -> None:
+    popup = resolve_visible_desktop_date_picker(page)
+    discovery = discover_popup_navigation_raw(page)
+    controls = resolve_calendar_navigation_controls(discovery)
+    resolved = controls.next if direction == "next" else controls.previous
+    if resolved is None:
+        raise GreatWalkDatePickerError(
+            f"Date-picker {direction}-month navigation control is missing",
+            calendar_diagnostics=navigation_diagnostics(page),
+        )
+    click_popup_navigation_control(page, popup, resolved, direction=direction)
 
 
 def sample_visible_day_labels(page: DatePickerPage) -> list[str]:
-    raw = page.evaluate(_COLLECT_CALENDAR_DIAGNOSTICS_JS)
-    if isinstance(raw, dict):
-        return list(raw.get("visible_day_labels") or [])[:MAX_VISIBLE_DAY_LABELS]
-    return []
+    _month_text, labels = sample_popup_day_labels(page)
+    return labels[:MAX_VISIBLE_DAY_LABELS]
 
 
 def collect_calendar_diagnostics(
@@ -205,45 +293,50 @@ def collect_calendar_diagnostics(
     *,
     navigation_steps: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    raw = page.evaluate(_COLLECT_CALENDAR_DIAGNOSTICS_JS)
-    if not isinstance(raw, dict):
-        raw = {}
-    labels = list(raw.get("visible_day_labels") or [])[:MAX_VISIBLE_DAY_LABELS]
-    month_text = raw.get("month_text")
-    diag: dict[str, Any] = {
-        "selector_counts": raw.get("selector_counts") or {},
-        "month_text": month_text,
-        "parsed_month_from_header": (
-            parse_month_year_header(month_text).isoformat()
-            if parse_month_year_header(month_text)
-            else None
-        ),
-        "parsed_month_from_day_labels": (
-            infer_month_from_day_labels(labels).isoformat()
-            if infer_month_from_day_labels(labels)
-            else None
-        ),
-        "visible_day_labels": labels,
-        "day_label_fingerprint": day_label_fingerprint(labels),
-        "picker_state": read_date_picker_state(page),
-    }
-    if navigation_steps is not None:
-        diag["navigation_steps"] = navigation_steps[:MAX_MONTH_NAVIGATION_STEPS]
-    if target is not None:
-        diag["choose_aria_label"] = build_choose_aria_label(target)
-        diag["unavailable_aria_label"] = build_unavailable_aria_label(target)
+    labels = sample_visible_day_labels(page)
+    month_text, _ = sample_popup_day_labels(page)
+    diag: dict[str, Any] = navigation_diagnostics(
+        page,
+        choose_label=build_choose_aria_label(target) if target else None,
+        unavailable_label=build_unavailable_aria_label(target) if target else None,
+        navigation_steps=navigation_steps,
+    )
+    diag.update(
+        {
+            "month_text": month_text,
+            "parsed_month_from_header": (
+                parse_month_year_header(month_text).isoformat()
+                if parse_month_year_header(month_text)
+                else None
+            ),
+            "parsed_month_from_day_labels": (
+                infer_month_from_day_labels(labels).isoformat()
+                if infer_month_from_day_labels(labels)
+                else None
+            ),
+            "visible_day_labels": labels,
+            "day_label_fingerprint": day_label_fingerprint(labels),
+            "picker_state": read_date_picker_state(page),
+        }
+    )
     return diag
 
 
 def locate_target_day_in_picker(
     page: DatePickerPage,
     target: date,
+    popup: DesktopDatePickerPopup | None = None,
 ) -> tuple[TargetDayStatus, str | None]:
+    if popup is None:
+        try:
+            popup = resolve_visible_desktop_date_picker(page)
+        except GreatWalkDatePickerError:
+            popup = None
     unavailable_label = build_unavailable_aria_label(target)
-    if _day_button_locator(page, unavailable_label).count() > 0:
+    if _day_button_locator(page, unavailable_label, popup).count() > 0:
         return "unavailable", unavailable_label
     choose_label = build_choose_aria_label(target)
-    if _day_button_locator(page, choose_label).count() > 0:
+    if _day_button_locator(page, choose_label, popup).count() > 0:
         return "choose", choose_label
     return "absent", None
 
@@ -310,7 +403,12 @@ def navigate_and_select_target_day(
     navigation_steps: list[dict[str, Any]] = []
 
     for attempt in range(MAX_MONTH_NAVIGATION_STEPS + 1):
-        status, label = locate_target_day_in_picker(page, target)
+        popup: DesktopDatePickerPopup | None = None
+        try:
+            popup = resolve_visible_desktop_date_picker(page)
+        except GreatWalkDatePickerError:
+            pass
+        status, label = locate_target_day_in_picker(page, target, popup)
         if status == "unavailable" and label:
             _raise_unavailable(
                 target,
@@ -320,7 +418,7 @@ def navigate_and_select_target_day(
                 navigation_steps=navigation_steps,
             )
         if status == "choose" and label:
-            _day_button_locator(page, label).first.click()
+            _day_button_locator(page, label, popup).first.click()
             if attempt == 0:
                 navigation_steps.append({"action": "target_already_visible"})
             else:
@@ -348,7 +446,9 @@ def navigate_and_select_target_day(
         inferred_month = infer_month_from_day_labels(labels_before) or header_month
 
         if not labels_before and header_month is None:
-            if not state.get("has_next") and not state.get("has_prev"):
+            discovery = discover_popup_navigation_raw(page)
+            controls = resolve_calendar_navigation_controls(discovery)
+            if controls.next is None and controls.previous is None:
                 raise GreatWalkDatePickerError(
                     "Date picker has no usable month header or day-button labels",
                     date_iso=date_iso,
@@ -364,44 +464,42 @@ def navigate_and_select_target_day(
             header_month=header_month,
             inferred_month=inferred_month,
         )
-        if direction == "next":
-            if not state.get("has_next"):
-                raise GreatWalkDatePickerError(
-                    "Date-picker next-month navigation control is missing",
-                    date_iso=date_iso,
-                    calendar_diagnostics=collect_calendar_diagnostics(
-                        page,
-                        target,
-                        navigation_steps=navigation_steps,
-                    ),
-                )
-            page.locator(DATE_PICKER_NEXT).first.click()
-        else:
-            if not state.get("has_prev"):
-                raise GreatWalkDatePickerError(
-                    "Date-picker previous-month navigation control is missing",
-                    date_iso=date_iso,
-                    calendar_diagnostics=collect_calendar_diagnostics(
-                        page,
-                        target,
-                        navigation_steps=navigation_steps,
-                    ),
-                )
-            page.locator(DATE_PICKER_PREV).first.click()
+        if direction == "next" and not state.get("has_next"):
+            _raise_missing_navigation(
+                page,
+                direction="next",
+                target=target,
+                date_iso=date_iso,
+                navigation_steps=navigation_steps,
+                fingerprint_before=fingerprint_before,
+            )
+        if direction == "prev" and not state.get("has_prev"):
+            _raise_missing_navigation(
+                page,
+                direction="prev",
+                target=target,
+                date_iso=date_iso,
+                navigation_steps=navigation_steps,
+                fingerprint_before=fingerprint_before,
+            )
 
-        page.wait_for_timeout(150)
-        labels_after = sample_visible_day_labels(page)
-        fingerprint_after = day_label_fingerprint(labels_after)
+        _click_popup_month_navigation(page, direction)
+        fingerprint_after, labels_after = _wait_for_fingerprint_change(
+            page,
+            fingerprint_before,
+        )
         if fingerprint_before == fingerprint_after:
             raise GreatWalkDatePickerError(
                 "Date-picker day-label fingerprint unchanged after navigation click",
                 date_iso=date_iso,
-                calendar_diagnostics={
-                    **collect_calendar_diagnostics(page, target, navigation_steps=navigation_steps),
-                    "direction": direction,
-                    "fingerprint_before": fingerprint_before,
-                    "fingerprint_after": fingerprint_after,
-                },
+                calendar_diagnostics=navigation_diagnostics(
+                    page,
+                    choose_label=build_choose_aria_label(target),
+                    unavailable_label=build_unavailable_aria_label(target),
+                    navigation_steps=navigation_steps,
+                    fingerprint_before=fingerprint_before,
+                    fingerprint_after=fingerprint_after,
+                ),
             )
         navigation_steps.append(
             {
@@ -464,30 +562,41 @@ def navigate_date_picker_to_month(
             header_month=header_month,
             inferred_month=inferred_month,
         )
-        if direction == "next":
-            if not state.get("has_next"):
-                raise GreatWalkDatePickerError(
-                    "Date-picker next-month navigation control is missing",
-                    date_iso=date_iso,
-                    calendar_diagnostics=collect_calendar_diagnostics(page, target, navigation_steps=steps),
-                )
-            page.locator(DATE_PICKER_NEXT).first.click()
-        else:
-            if not state.get("has_prev"):
-                raise GreatWalkDatePickerError(
-                    "Date-picker previous-month navigation control is missing",
-                    date_iso=date_iso,
-                    calendar_diagnostics=collect_calendar_diagnostics(page, target, navigation_steps=steps),
-                )
-            page.locator(DATE_PICKER_PREV).first.click()
-        page.wait_for_timeout(150)
-        labels_after = sample_visible_day_labels(page)
-        fingerprint_after = day_label_fingerprint(labels_after)
+        if direction == "next" and not state.get("has_next"):
+            _raise_missing_navigation(
+                page,
+                direction="next",
+                target=target,
+                date_iso=date_iso,
+                navigation_steps=steps,
+                fingerprint_before=fingerprint_before,
+            )
+        if direction == "prev" and not state.get("has_prev"):
+            _raise_missing_navigation(
+                page,
+                direction="prev",
+                target=target,
+                date_iso=date_iso,
+                navigation_steps=steps,
+                fingerprint_before=fingerprint_before,
+            )
+        _click_popup_month_navigation(page, direction)
+        fingerprint_after, _labels_after = _wait_for_fingerprint_change(
+            page,
+            fingerprint_before,
+        )
         if fingerprint_before == fingerprint_after:
             raise GreatWalkDatePickerError(
                 "Date-picker day-label fingerprint unchanged after navigation click",
                 date_iso=date_iso,
-                calendar_diagnostics=collect_calendar_diagnostics(page, target, navigation_steps=steps),
+                calendar_diagnostics=navigation_diagnostics(
+                    page,
+                    choose_label=build_choose_aria_label(target),
+                    unavailable_label=build_unavailable_aria_label(target),
+                    navigation_steps=steps,
+                    fingerprint_before=fingerprint_before,
+                    fingerprint_after=fingerprint_after,
+                ),
             )
         steps.append(
             {

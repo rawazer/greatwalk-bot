@@ -259,31 +259,49 @@ def test_inspect_open_date_picker_includes_bounded_elements():
                                     return_value=[{"tag": "INPUT", "id": "gw-date"}],
                                 ):
                                     with patch(
-                                        "greatwalkbot.inspect_greatwalk_dom.discover_great_walk_dom",
+                                        "greatwalkbot.inspect_greatwalk_dom.inspect_date_picker_navigation",
                                         return_value={
-                                            "candidate_count": 0,
-                                            "candidates": [],
-                                            "visible_controls": [],
+                                            "date_picker_popup": {"strategy": ".react-datepicker-popper"},
+                                            "date_picker_navigation": {
+                                                "popup_selector": ".react-datepicker-popper",
+                                                "candidate_count": 2,
+                                                "candidates": [],
+                                                "resolved_next": {"class": "gw-header-chevron-right"},
+                                                "resolved_previous": {"class": "gw-header-chevron-left"},
+                                                "resolution_method": "geometric_fallback",
+                                                "rejection_reasons": [],
+                                            },
                                         },
                                     ):
                                         with patch(
-                                            "greatwalkbot.inspect_greatwalk_dom.save_dom_inspection_artifacts"
-                                        ) as save:
-                                            from greatwalkbot.sources.diagnostics import DiagnosticArtifacts
+                                            "greatwalkbot.inspect_greatwalk_dom.discover_great_walk_dom",
+                                            return_value={
+                                                "candidate_count": 0,
+                                                "candidates": [],
+                                                "visible_controls": [],
+                                            },
+                                        ):
+                                            with patch(
+                                                "greatwalkbot.inspect_greatwalk_dom.save_dom_inspection_artifacts"
+                                            ) as save:
+                                                from greatwalkbot.sources.diagnostics import DiagnosticArtifacts
 
-                                            save.return_value = DiagnosticArtifacts(
-                                                directory=Path("logs/diagnostics/inspect_milford"),
-                                                summary_path=Path(
-                                                    "logs/diagnostics/inspect_milford/summary.json"
-                                                ),
-                                                screenshot_path=None,
-                                            )
-                                            report = run_inspect_greatwalk_dom(
-                                                MILFORD,
-                                                open_date_picker=True,
-                                            )
+                                                save.return_value = DiagnosticArtifacts(
+                                                    directory=Path("logs/diagnostics/inspect_milford"),
+                                                    summary_path=Path(
+                                                        "logs/diagnostics/inspect_milford/summary.json"
+                                                    ),
+                                                    screenshot_path=None,
+                                                )
+                                                report = run_inspect_greatwalk_dom(
+                                                    MILFORD,
+                                                    open_date_picker=True,
+                                                )
     assert report.desktop_root["selector"] == DESKTOP_ROOT_SELECTOR
     assert "date_picker_elements" in report.discovery_summary
+    assert report.discovery_summary["date_picker_navigation"]["resolved_next"]["class"] == (
+        "gw-header-chevron-right"
+    )
     session.prepare_fetch.assert_not_called()
 
 

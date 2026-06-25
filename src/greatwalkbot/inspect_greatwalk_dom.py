@@ -10,6 +10,7 @@ from typing import Any
 from greatwalkbot.constants import GREATWALK_HASH
 from greatwalkbot.models import Track
 from greatwalkbot.sources.diagnostics import DiagnosticArtifacts, save_dom_inspection_artifacts
+from greatwalkbot.sources.gw_desktop_date_picker_popup import inspect_date_picker_navigation
 from greatwalkbot.sources.gw_desktop_form import (
     discover_date_picker_elements,
     discover_desktop_dropdown_options,
@@ -148,12 +149,17 @@ def run_inspect_greatwalk_dom(
             open_desktop_date_picker(page)
             page.wait_for_timeout(400)
             date_picker_elements = discover_date_picker_elements(page)
+            date_picker_inspection = inspect_date_picker_navigation(page)
+        else:
+            date_picker_inspection = {}
 
         dom_report = discover_great_walk_dom(page)
         dom_report["desktop_root"] = desktop_root
         dom_report["desktop_dropdown_options"] = dropdown_options
         if date_picker_elements:
             dom_report["date_picker_elements"] = date_picker_elements
+        if date_picker_inspection:
+            dom_report.update(date_picker_inspection)
 
         assessment = assess_control_discovery(dom_report)
         summary = build_discovery_summary(
@@ -165,6 +171,11 @@ def run_inspect_greatwalk_dom(
         summary["desktop_dropdown_options"] = dropdown_options
         if date_picker_elements:
             summary["date_picker_elements"] = date_picker_elements
+        if date_picker_inspection:
+            summary["date_picker_popup"] = date_picker_inspection.get("date_picker_popup")
+            summary["date_picker_navigation"] = date_picker_inspection.get(
+                "date_picker_navigation"
+            )
 
         if pause_seconds > 0:
             print(

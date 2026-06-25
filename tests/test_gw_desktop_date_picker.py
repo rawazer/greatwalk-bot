@@ -71,40 +71,170 @@ class _PickerStatePage:
         has_next: bool = True,
         has_prev: bool = True,
         visible_labels: list[str] | None = None,
+        use_standard_react_nav: bool = True,
     ) -> None:
         self.open_picker = open_picker
         self.month_text = month_text
         self.has_next = has_next
         self.has_prev = has_prev
+        self.use_standard_react_nav = use_standard_react_nav
         self.visible_labels = list(visible_labels or [])
         self.clicks: list[str] = []
         self._day_click_side_effect: object | None = None
         self._nav_clicks = 0
+        self._nav_resolve_generation = 0
+
+    def _popup_inner_locator(self, inner: str) -> MagicMock:
+        inner_loc = MagicMock()
+        inner_loc.first = inner_loc
+        if inner.startswith('[aria-label="') and inner.endswith('"]'):
+            label = inner[len('[aria-label="') : -2].replace('\\"', '"')
+            count = 1 if label in self.visible_labels else 0
+            inner_loc.count.return_value = count
+
+            def _click() -> None:
+                if label:
+                    self.clicks.append(label)
+                if self._day_click_side_effect is not None and callable(
+                    self._day_click_side_effect
+                ):
+                    self._day_click_side_effect()
+
+            inner_loc.click.side_effect = _click
+            return inner_loc
+        if (
+            DATE_PICKER_NEXT in inner
+            or "gw-header-chevron-right" in inner
+            or inner == ".gw-header-chevron-right"
+        ):
+            inner_loc.count.return_value = 1 if self.has_next else 0
+            inner_loc.click.side_effect = self._click_next
+        elif (
+            DATE_PICKER_PREV in inner
+            or "gw-header-chevron-left" in inner
+            or inner == ".gw-header-chevron-left"
+        ):
+            inner_loc.count.return_value = 1 if self.has_prev else 0
+            inner_loc.click.side_effect = self._click_prev
+        else:
+            inner_loc.count.return_value = 0
+        return inner_loc
+
+    def _popup_locator(self) -> MagicMock:
+        loc = MagicMock()
+        loc.first = loc
+        loc.count.return_value = 1 if self.open_picker else 0
+        loc.locator.side_effect = self._popup_inner_locator
+        loc.filter.return_value = loc
+        return loc
+
+    def _popup_descriptor(self) -> dict:
+        return {
+            "strategy": ".react-datepicker-popper",
+            "tag": "DIV",
+            "id": None,
+            "class": "react-datepicker-popper",
+            "rect": {"x": 100, "y": 200, "width": 280, "height": 300},
+        }
+
+    def _navigation_candidates(self) -> list[dict]:
+        candidates: list[dict] = []
+        popup_width = 280
+        if self.has_prev:
+            candidates.append(
+                {
+                    "index": len(candidates),
+                    "tag": "BUTTON",
+                    "id": None,
+                    "class": (
+                        "react-datepicker__navigation react-datepicker__navigation--previous"
+                        if self.use_standard_react_nav
+                        else "gw-header-chevron-left gw-header-chevron"
+                    ),
+                    "role": "button",
+                    "aria_label": (
+                        "Previous month" if self.use_standard_react_nav else None
+                    ),
+                    "title": None,
+                    "text": None,
+                    "visible": True,
+                    "enabled": True,
+                    "popup_relative_x": 10,
+                    "popup_relative_y": 8,
+                    "in_upper_portion": True,
+                    "near_left_edge": True,
+                    "near_right_edge": False,
+                    "react_prev": self.use_standard_react_nav,
+                    "react_next": False,
+                }
+            )
+        if self.has_next:
+            candidates.append(
+                {
+                    "index": len(candidates),
+                    "tag": "BUTTON",
+                    "id": None,
+                    "class": (
+                        "react-datepicker__navigation react-datepicker__navigation--next"
+                        if self.use_standard_react_nav
+                        else "gw-header-chevron-right gw-header-chevron"
+                    ),
+                    "role": "button",
+                    "aria_label": "Next month" if self.use_standard_react_nav else None,
+                    "title": None,
+                    "text": None,
+                    "visible": True,
+                    "enabled": True,
+                    "popup_relative_x": popup_width - 30,
+                    "popup_relative_y": 8,
+                    "in_upper_portion": True,
+                    "near_left_edge": False,
+                    "near_right_edge": True,
+                    "react_prev": False,
+                    "react_next": self.use_standard_react_nav,
+                }
+            )
+        return candidates
 
     def evaluate(self, expression: str, arg=None) -> object:
-        if "selector_counts" in expression:
+        if "triggerSelector" in expression:
+            if not self.open_picker:
+                return {"found": False, "popup_count": 0, "popups": [], "reason": "closed"}
+            popup = self._popup_descriptor()
             return {
-                "selector_counts": {
-                    "current_month": 1 if self.month_text else 0,
-                    "month_container": 1 if self.open_picker else 0,
-                    "day_buttons": len(self.visible_labels),
-                    "nav_next": 1 if self.has_next and self.open_picker else 0,
-                    "nav_prev": 1 if self.has_prev and self.open_picker else 0,
-                },
-                "month_text": self.month_text if self.open_picker else None,
-                "visible_day_labels": list(self.visible_labels)[:15],
+                "found": True,
+                "popup_count": 1,
+                "popup": popup,
+                "popups": [popup],
             }
-        if "react-datepicker__month-container" in expression:
+        if "standard_nav" in expression and "candidates" in expression:
+            if not self.open_picker:
+                return {"found": False, "popup": None, "candidates": []}
+            popup = self._popup_descriptor()
             return {
-                "open": self.open_picker,
-                "container_count": 1 if self.open_picker else 0,
+                "found": True,
+                "popup": popup,
+                "candidates": self._navigation_candidates(),
+                "standard_nav": {
+                    "next": self.has_next and self.use_standard_react_nav,
+                    "prev": self.has_prev and self.use_standard_react_nav,
+                },
+            }
+        if "labels" in expression and "month_text" in expression:
+            return {
                 "month_text": self.month_text if self.open_picker else None,
-                "has_next": self.has_next if self.open_picker else False,
-                "has_prev": self.has_prev if self.open_picker else False,
+                "labels": list(self.visible_labels)[:15],
             }
         return {}
 
     def locator(self, selector: str) -> MagicMock:
+        if "[id*='-mobile']" in selector:
+            loc = MagicMock()
+            loc.count.return_value = 0
+            loc.filter.return_value = loc
+            return loc
+        if ".react-datepicker-popper" in selector:
+            return self._popup_locator()
         loc = MagicMock()
         loc.first = loc
         if selector == DATE_PICKER_NEXT and self.has_next:
@@ -146,7 +276,7 @@ class _PickerStatePage:
         current = datetime.strptime(month_text, "%B %Y")
         return [build_choose_aria_label(date(current.year, current.month, day)) for day in (1, 7, 15)]
 
-    def _click_next(self) -> None:
+    def _click_next(self, **_kwargs: object) -> None:
         from datetime import datetime
 
         self._nav_clicks += 1
@@ -169,7 +299,7 @@ class _PickerStatePage:
         if self.month_text == "December 2026":
             self.visible_labels.append(build_choose_aria_label(date(2026, 12, 7)))
 
-    def _click_prev(self) -> None:
+    def _click_prev(self, **_kwargs: object) -> None:
         from datetime import datetime
 
         if not self.month_text:
@@ -230,7 +360,7 @@ def test_navigation_unchanged_fingerprint_fails_honestly():
         visible_labels=[label],
         has_next=True,
     )
-    page._click_next = lambda: None  # type: ignore[method-assign]
+    page._click_next = lambda **_kwargs: None  # type: ignore[method-assign]
     with pytest.raises(GreatWalkDatePickerError, match="fingerprint unchanged"):
         navigate_and_select_target_day(page, date(2026, 12, 7), date_iso="2026-12-07")
 
