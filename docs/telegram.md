@@ -49,14 +49,13 @@ uv run gwbot notify-test config.yaml
 uv run gwbot watch config.yaml
 ```
 
-## 5. systemd user service with an environment file
+## 5. systemd environment file
 
-Store secrets **outside the repository**:
+Store secrets **outside the repository**. For a **system** service (recommended on VPS):
 
 ```bash
-mkdir -p ~/.config/greatwalkbot
-chmod 700 ~/.config/greatwalkbot
-nano ~/.config/greatwalkbot/env
+sudo mkdir -p /etc/greatwalk-bot
+sudo nano /etc/greatwalk-bot/greatwalk-bot.env
 ```
 
 Contents (mode `600` recommended):
@@ -67,23 +66,34 @@ GREATWALKBOT_TELEGRAM_CHAT_ID=your-chat-id
 ```
 
 ```bash
-chmod 600 ~/.config/greatwalkbot/env
+sudo chown root:root /etc/greatwalk-bot/greatwalk-bot.env
+sudo chmod 600 /etc/greatwalk-bot/greatwalk-bot.env
 ```
 
-In `~/.config/systemd/user/greatwalkbot.service`:
+The unit template `deploy/greatwalk-bot.service` includes (leading `-` makes the file optional when Telegram is off):
 
 ```ini
-[Service]
-EnvironmentFile=%h/.config/greatwalkbot/env
-WorkingDirectory=%h/greatwalk-bot
-ExecStart=%h/.local/bin/uv run gwbot watch config.yaml
+EnvironmentFile=-/etc/greatwalk-bot/greatwalk-bot.env
 ```
 
 Reload and restart:
 
 ```bash
-systemctl --user daemon-reload
-systemctl --user restart greatwalkbot.service
+sudo systemctl daemon-reload
+sudo systemctl restart greatwalk-bot
+```
+
+For a **user** service on a home machine, use `~/.config/greatwalkbot/env` instead:
+
+```bash
+mkdir -p ~/.config/greatwalkbot
+chmod 700 ~/.config/greatwalkbot
+nano ~/.config/greatwalkbot/env
+chmod 600 ~/.config/greatwalkbot/env
+```
+
+```ini
+EnvironmentFile=%h/.config/greatwalkbot/env
 ```
 
 See [deployment.md](deployment.md) for the full service setup.

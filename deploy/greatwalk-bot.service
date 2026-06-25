@@ -1,0 +1,39 @@
+# GreatWalkBot system service (systemd)
+#
+# Install (after editing placeholders below):
+#   sudo mkdir -p /etc/greatwalk-bot
+#   sudo cp deploy/greatwalk-bot.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now greatwalk-bot
+#
+# Placeholders to replace before install:
+#   __GREATWALKBOT_USER__     dedicated unprivileged account (e.g. greatwalk)
+#   __GREATWALKBOT_HOME__      that user's home directory (e.g. /home/greatwalk)
+#   __GREATWALKBOT_REPO__      absolute path to the git clone (e.g. /home/greatwalk/greatwalk-bot)
+#
+# Secrets live in /etc/greatwalk-bot/greatwalk-bot.env (see docs/deployment.md).
+# Runtime state is written under __GREATWALKBOT_REPO__:
+#   logs/greatwalkbot.log
+#   logs/status.json
+#   data/seen.db
+
+[Unit]
+Description=GreatWalkBot availability watcher
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__GREATWALKBOT_USER__
+Group=__GREATWALKBOT_USER__
+WorkingDirectory=__GREATWALKBOT_REPO__
+ExecStart=__GREATWALKBOT_REPO__/.venv/bin/gwbot watch __GREATWALKBOT_REPO__/config.yaml
+EnvironmentFile=-/etc/greatwalk-bot/greatwalk-bot.env
+Environment=PYTHONUNBUFFERED=1
+Restart=on-failure
+RestartSec=30
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Install]
+WantedBy=multi-user.target

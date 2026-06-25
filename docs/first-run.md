@@ -79,14 +79,16 @@ Exit code `0` means ready; `1` means fix the reported errors before deploying.
 
 ## 6. Deploy with systemd
 
-See [deployment.md](deployment.md) for full instructions.
+See [deployment.md](deployment.md) for the full VM setup (environment file, unit placeholders, enable commands).
 
 ```bash
-cp deploy/greatwalkbot.service ~/.config/systemd/user/
-# Edit the service file if your install path differs
-systemctl --user daemon-reload
-systemctl --user enable --now greatwalkbot.service
+# Edit deploy/greatwalk-bot.service placeholders, then:
+sudo cp deploy/greatwalk-bot.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now greatwalk-bot
 ```
+
+For ongoing use after deploy, see [operations.md](operations.md).
 
 ## 7. Inspect status and logs
 
@@ -120,7 +122,7 @@ After you book on DOC, add a `confirmed_booking` block to that track in `config.
 Restart the watcher:
 
 ```bash
-systemctl --user restart greatwalkbot.service
+sudo systemctl restart greatwalk-bot
 ```
 
 The bot stops monitoring that track and plans around the confirmed dates. Details: [bookings.md](bookings.md).

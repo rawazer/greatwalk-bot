@@ -83,12 +83,17 @@ Watch mode is designed for unattended long-running use:
 
 ## Run unattended
 
-For a home server or VPS, see **[Deployment guide](docs/deployment.md)** and **[First run guide](docs/first-run.md)**.
+| Guide | When to use |
+|-------|-------------|
+| **[Deployment](docs/deployment.md)** | First-time setup on a new Linux VM (clone, `uv sync`, systemd, secrets) |
+| **[First run](docs/first-run.md)** | Configure a trip from the honeymoon template before or after deploy |
+| **[Operations](docs/operations.md)** | Updates, logs, restart, manual polls, troubleshooting |
+
+Quick systemd install (see deployment guide for full steps):
 
 ```bash
-cp deploy/greatwalkbot.service ~/.config/systemd/user/
-systemctl --user enable --now greatwalkbot.service
-gwbot status
+sudo cp deploy/greatwalk-bot.service /etc/systemd/system/   # edit placeholders first
+sudo systemctl enable --now greatwalk-bot
 ```
 
 The host must stay powered on and connected for the full monitoring period.
@@ -114,7 +119,7 @@ greatwalkbot/
 ├── config.example.yaml
 ├── CHANGELOG.md
 ├── ROADMAP.md
-├── deploy/                # systemd unit example
+├── deploy/                # systemd unit template (greatwalk-bot.service)
 ├── logs/                  # runtime logs and status.json
 ├── data/                  # persistent dedupe database
 ├── src/greatwalkbot/
@@ -124,7 +129,8 @@ greatwalkbot/
 ## Documentation
 
 - **[First run guide](docs/first-run.md)** — recommended starting point
-- [Deployment guide](docs/deployment.md)
+- **[Deployment guide](docs/deployment.md)** — first-time VM setup (systemd, Playwright, secrets)
+- **[Operations guide](docs/operations.md)** — updates, logs, restart, troubleshooting
 - [Runtime state contract](docs/runtime-state.md)
 - [Telegram notifications](docs/telegram.md)
 - [Trip-fit evaluation](docs/trip-fit.md)
