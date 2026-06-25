@@ -20,6 +20,7 @@ from greatwalkbot.monitoring.dedupe import SqliteSeenAvailabilityStore
 from greatwalkbot.monitoring.metrics import RuntimeMetrics
 from greatwalkbot.monitoring.models import AvailableItinerary
 from greatwalkbot.monitoring.watcher import Watcher
+from greatwalkbot.sources.fetch_timing import TrackFetchTiming
 from greatwalkbot.notifications.console import ConsoleNotifier
 from support import make_itinerary
 from greatwalkbot.sources.playwright import PlaywrightAvailabilitySource
@@ -138,11 +139,15 @@ def test_browser_restart_then_success():
     session = MagicMock()
     session.is_healthy.return_value = True
     snapshot = _snapshot()
-
-    source = PlaywrightAvailabilitySource(
-        session_manager=session,
-        retry_policy=RetryPolicy(max_attempts=1, base_delay_seconds=0.01),
+    timing = TrackFetchTiming(
+        track_slug="milford",
+        navigation_seconds=1.0,
+        app_ready_seconds=1.0,
+        capture_seconds=1.0,
+        total_seconds=3.0,
     )
+
+    source = PlaywrightAvailabilitySource(session_manager=session)
 
     calls = {"count": 0}
 
@@ -150,10 +155,10 @@ def test_browser_restart_then_success():
         calls["count"] += 1
         if calls["count"] == 1:
             raise FetchError("browser session lost")
-        return snapshot
+        return snapshot, timing
 
     with patch.object(source, "_fetch_once", side_effect=fetch_once):
-        with patch("greatwalkbot.sources.playwright.retry_call", side_effect=lambda fn, _p: fn()):
+        with patch("greatwalkbot.sources.playwright.save_session_failure_diagnostics"):
             result = source.fetch_track_availability(
                 MILFORD, date(2026, 12, 1), date(2026, 12, 31)
             )

@@ -50,6 +50,8 @@ class RuntimeMetrics:
         self.last_notification_attempt_at: datetime | None = None
         self.last_successful_notification_at: datetime | None = None
         self._last_notification_error: LastNotificationError | None = None
+        self._last_poll_track_timings: list[dict[str, float | str]] | None = None
+        self._last_poll_duration_seconds: float | None = None
         self._lock = threading.Lock()
 
     def set_state(self, state: RuntimeState) -> None:
@@ -97,6 +99,17 @@ class RuntimeMetrics:
             self.browser_restarts += 1
         self.flush()
 
+    def record_poll_track_summary(
+        self,
+        *,
+        track_timings: list[dict[str, float | str]],
+        duration_seconds: float,
+    ) -> None:
+        with self._lock:
+            self._last_poll_track_timings = track_timings
+            self._last_poll_duration_seconds = duration_seconds
+        self.flush()
+
     def record_notification_attempt(self) -> None:
         with self._lock:
             self.last_notification_attempt_at = _utc_now()
@@ -141,6 +154,8 @@ class RuntimeMetrics:
                 last_notification_attempt_at=_iso(self.last_notification_attempt_at),
                 last_successful_notification_at=_iso(self.last_successful_notification_at),
                 last_notification_error=self._last_notification_error,
+                last_poll_track_timings=self._last_poll_track_timings,
+                last_poll_duration_seconds=self._last_poll_duration_seconds,
             )
 
     def flush(self) -> None:

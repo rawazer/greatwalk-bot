@@ -9,7 +9,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-STATUS_SCHEMA_VERSION = 2
+STATUS_SCHEMA_VERSION = 3
 
 
 class RuntimeState(str, Enum):
@@ -53,6 +53,8 @@ class StatusSnapshot:
     last_notification_attempt_at: str | None = None
     last_successful_notification_at: str | None = None
     last_notification_error: LastNotificationError | None = None
+    last_poll_track_timings: list[dict[str, float | str]] | None = None
+    last_poll_duration_seconds: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -60,6 +62,8 @@ class StatusSnapshot:
             payload["last_error"] = None
         if self.last_notification_error is None:
             payload["last_notification_error"] = None
+        if self.last_poll_track_timings is None:
+            payload["last_poll_track_timings"] = None
         return payload
 
 
@@ -117,6 +121,8 @@ def load_status_snapshot(path: Path) -> StatusSnapshot | None:
             last_notification_error=_parse_last_notification_error(
                 raw.get("last_notification_error")
             ),
+            last_poll_track_timings=raw.get("last_poll_track_timings"),
+            last_poll_duration_seconds=raw.get("last_poll_duration_seconds"),
         )
     except (json.JSONDecodeError, KeyError, TypeError, ValueError):
         return None

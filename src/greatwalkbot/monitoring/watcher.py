@@ -61,9 +61,13 @@ class Watcher:
             self._metrics.set_state(RuntimeState.POLLING)
 
         poll_started = self._metrics.record_poll_start() if self._metrics else None
+        poll_started_wall = time.monotonic()
         track_results: list[TrackCheckResult] = []
         trip = self.plan.trip
         poll_failed = False
+
+        if hasattr(self.source, "reset_poll_timings"):
+            self.source.reset_poll_timings()
 
         for track_preference in trip.tracks:
             if self._shutdown.shutdown_requested:
@@ -166,6 +170,27 @@ class Watcher:
         )
 
         if self._metrics is not None and poll_started is not None:
+            poll_duration = time.monotonic() - poll_started_wall
+            track_timings = []
+            if hasattr(self.source, "last_poll_track_timings"):
+                track_timings = [
+                    t.to_dict() if hasattr(t, "to_dict") else t
+                    for t in self.source.last_poll_track_timings
+                ]
+            if track_timings:
+                self._metrics.record_poll_track_summary(
+                    track_timings=track_timings,
+                    duration_seconds=poll_duration,
+                )
+                timing_parts = ", ".join(
+                    f"{t.get('track_slug', '?')}={t.get('total_seconds', 0):.1f}s"
+                    for t in track_timings
+                )
+                logger.info(
+                    "Poll completed in %.1fs (%s)",
+                    poll_duration,
+                    timing_parts,
+                )
             if poll_failed and not track_results:
                 self._metrics.record_poll_failure(poll_started)
             else:

@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any
 
 from playwright.sync_api import Browser, Page, Playwright, Route, sync_playwright
 
 from greatwalkbot.constants import DEFAULT_USER_AGENT, GW_FACILITY_PATH
-from greatwalkbot.infra.errors import SessionError
+from greatwalkbot.infra.errors import FetchError, SessionError
 
 logger = logging.getLogger(__name__)
 
@@ -82,12 +83,39 @@ class SessionManager:
     def captured_payload(self) -> dict | None:
         return self._captured_payload
 
+    def wait_for_capture(self, timeout_ms: int) -> dict:
+        """Wait up to timeout_ms for a greatwalkplacefacility JSON response."""
+        deadline = time.monotonic() + (timeout_ms / 1000.0)
+        while time.monotonic() < deadline:
+            payload = self._captured_payload
+            if payload is not None:
+                return payload
+            if self._page is not None:
+                self._page.wait_for_timeout(100)
+            else:
+                time.sleep(0.1)
+        raise FetchError(
+            "No availability data captured within "
+            f"{timeout_ms}ms. AWS WAF may have blocked the session; retry with --headed."
+        )
+
     def _ensure_started(self) -> None:
         if not self.is_healthy():
             raise SessionError("Browser session is not available")
 
     def _wire_page_handlers(self) -> None:
         assert self._page is not None
+        page = self._page
+        page._gwbot_console_messages = []  # type: ignore[attr-defined]
+        page._gwbot_page_errors = []  # type: ignore[attr-defined]
+
+        def on_console(msg) -> None:
+            page._gwbot_console_messages.append(  # type: ignore[attr-defined]
+                f"{msg.type}: {msg.text}"[:500]
+            )
+
+        def on_page_error(exc) -> None:
+            page._gwbot_page_errors.append(str(exc)[:500])  # type: ignore[attr-defined]
 
         def on_response(response) -> None:
             if GW_FACILITY_PATH not in response.url or response.status != 200:
@@ -117,4 +145,6 @@ class SessionManager:
             )
 
         self._page.route(f"**/{GW_FACILITY_PATH}", rewrite_facility_post)
+        page.on("console", on_console)
+        page.on("pageerror", on_page_error)
         self._page.on("response", on_response)

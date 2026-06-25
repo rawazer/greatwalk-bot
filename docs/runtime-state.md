@@ -9,6 +9,7 @@ GreatWalkBot writes three runtime artifacts when `gwbot watch` is running. These
 | `data/seen.db` | SQLite database of itineraries already notified |
 | `logs/greatwalkbot.log` | Rotating structured application log |
 | `logs/status.json` | Machine-readable watcher health snapshot |
+| `logs/diagnostics/` | Bounded SPA failure artifacts (screenshot + sanitized summary); gitignored under `logs/` |
 
 All paths are relative to the process working directory (typically the repository root).
 
@@ -48,7 +49,16 @@ Exceptions logged via `logger.exception()` include stack traces in the file hand
 
 Atomic JSON snapshot of watcher health. Written via a temporary file + `os.replace()` so `gwbot status` never reads partial JSON.
 
-### Schema version 2 (current)
+### Schema version 3 (current)
+
+Adds optional poll timing fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `last_poll_track_timings` | array or null | Per-track fetch timings from the most recent poll (`track_slug`, `navigation_seconds`, `app_ready_seconds`, `capture_seconds`, `total_seconds`) |
+| `last_poll_duration_seconds` | number or null | Wall-clock duration of the most recent poll cycle |
+
+### Schema version 2
 
 ```json
 {

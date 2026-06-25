@@ -2,7 +2,7 @@
 
 Open-source assistant for planning and monitoring New Zealand DOC Great Walk trips.
 
-**Status:** v0.1.0 — release-ready for manual booking assistance.
+**Status:** v0.1.0 — release-ready; SPA reliability hardened (bounded navigation waits).
 
 **New here?** Start with the **[First run guide](docs/first-run.md)** — copy the honeymoon template, run `plan-check` and `preflight`, configure Telegram, and deploy.
 

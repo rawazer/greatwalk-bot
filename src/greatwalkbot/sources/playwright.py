@@ -3,38 +3,59 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import date
 
-from playwright.sync_api import Page
-
-from greatwalkbot.constants import GREATWALK_HASH, SITE_URL
-from greatwalkbot.infra.errors import FetchError, SessionError
-from greatwalkbot.infra.retry import RetryPolicy, is_retryable, retry_call
+from greatwalkbot.infra.errors import FetchError, RetryableError, SessionError
 from greatwalkbot.models import AvailabilitySnapshot, Track
 from greatwalkbot.parsing import build_gw_facility_request, parse_gw_facility_response
+from greatwalkbot.sources.diagnostics import save_session_failure_diagnostics
+from greatwalkbot.sources.fetch_timing import TrackFetchTiming
 from greatwalkbot.sources.session_manager import SessionManager
+from greatwalkbot.sources.spa_navigation import (
+    click_search_button,
+    navigate_to_site,
+    select_track_with_recovery,
+    wait_for_great_walk_ui,
+)
+from greatwalkbot.sources.spa_timing import (
+    DEFAULT_APP_READY_TIMEOUT_MS,
+    DEFAULT_CAPTURE_TIMEOUT_MS,
+    DEFAULT_NAVIGATION_TIMEOUT_MS,
+    MAX_FETCH_ATTEMPTS_PER_TRACK,
+)
 
 logger = logging.getLogger(__name__)
 
 
 class PlaywrightAvailabilitySource:
-    """Load the DOC SPA and capture the Great Walk facility grid API."""
+    """Load the DOC SPA and capture the Great Walk facility grid API.
+
+    Per track: one fetch attempt; on retryable failure, restart the browser
+    session and retry once (``MAX_FETCH_ATTEMPTS_PER_TRACK`` = 2 total).
+    No nested exponential retry loops — worst-case per track is roughly
+    2 × (navigation + app-ready + capture) bounded waits (~150s).
+    """
 
     def __init__(
         self,
         headless: bool = True,
-        timeout_ms: int = 120_000,
         *,
+        navigation_timeout_ms: int = DEFAULT_NAVIGATION_TIMEOUT_MS,
+        app_ready_timeout_ms: int = DEFAULT_APP_READY_TIMEOUT_MS,
+        capture_timeout_ms: int = DEFAULT_CAPTURE_TIMEOUT_MS,
         session_manager: SessionManager | None = None,
-        retry_policy: RetryPolicy | None = None,
         metrics: object | None = None,
     ) -> None:
         self.headless = headless
-        self.timeout_ms = timeout_ms
+        self.navigation_timeout_ms = navigation_timeout_ms
+        self.app_ready_timeout_ms = app_ready_timeout_ms
+        self.capture_timeout_ms = capture_timeout_ms
         self._session = session_manager
-        self._retry_policy = retry_policy or RetryPolicy()
         self._metrics = metrics
         self._owns_session = session_manager is None
+        self.last_track_timing: TrackFetchTiming | None = None
+        self.last_poll_track_timings: tuple[TrackFetchTiming, ...] = ()
 
     def fetch_track_availability(
         self,
@@ -46,13 +67,13 @@ class PlaywrightAvailabilitySource:
         if self._session is None:
             self._session = SessionManager(
                 headless=self.headless,
-                timeout_ms=self.timeout_ms,
+                timeout_ms=self.navigation_timeout_ms,
             )
             self._session.start()
             created_session = True
 
         try:
-            return self._fetch_with_recovery(track, from_date, to_date)
+            return self._fetch_with_session_recovery(track, from_date, to_date)
         finally:
             if created_session and self._session is not None:
                 self._session.close()
@@ -63,81 +84,98 @@ class PlaywrightAvailabilitySource:
             self._session.close()
             self._session = None
 
-    def _fetch_with_recovery(
+    def _fetch_with_session_recovery(
         self,
         track: Track,
         from_date: date,
         to_date: date,
     ) -> AvailabilitySnapshot:
         assert self._session is not None
-        try:
-            return retry_call(
-                lambda: self._fetch_once(track, from_date, to_date),
-                self._retry_policy,
-            )
-        except Exception as exc:
-            if not is_retryable(exc):
-                raise
-            logger.warning(
-                "Fetch failed after retries for %s; restarting browser session",
-                track.slug,
-            )
-            self._session.restart()
-            if self._metrics is not None and hasattr(self._metrics, "record_browser_restart"):
-                self._metrics.record_browser_restart()
-            return self._fetch_once(track, from_date, to_date)
+        last_exc: BaseException | None = None
+        page = None
+
+        for attempt in range(1, MAX_FETCH_ATTEMPTS_PER_TRACK + 1):
+            try:
+                snapshot, timing = self._fetch_once(track, from_date, to_date)
+                self.last_track_timing = timing
+                self.last_poll_track_timings = (*self.last_poll_track_timings, timing)
+                logger.info("Fetch timing: %s", timing.log_line())
+                return snapshot
+            except RetryableError as exc:
+                last_exc = exc
+                page = self._session.page if self._session.is_healthy() else None
+                save_session_failure_diagnostics(
+                    page=page,
+                    track_name=track.name,
+                    track_slug=track.slug,
+                    error=exc,
+                )
+                if attempt >= MAX_FETCH_ATTEMPTS_PER_TRACK:
+                    break
+                logger.warning(
+                    "Retryable fetch failure for %s (attempt %s/%s): %s; "
+                    "restarting browser session",
+                    track.slug,
+                    attempt,
+                    MAX_FETCH_ATTEMPTS_PER_TRACK,
+                    exc,
+                )
+                self._session.restart()
+                if self._metrics is not None and hasattr(
+                    self._metrics, "record_browser_restart"
+                ):
+                    self._metrics.record_browser_restart()
+
+        assert last_exc is not None
+        raise last_exc
 
     def _fetch_once(
         self,
         track: Track,
         from_date: date,
         to_date: date,
-    ) -> AvailabilitySnapshot:
+    ) -> tuple[AvailabilitySnapshot, TrackFetchTiming]:
         assert self._session is not None
         if not self._session.is_healthy():
             raise SessionError("Browser session is unhealthy")
+
+        started = time.monotonic()
 
         request_body = build_gw_facility_request(track, from_date, to_date)
         self._session.prepare_fetch(request_body)
         page = self._session.page
 
-        page.goto(SITE_URL, wait_until="networkidle", timeout=self.timeout_ms)
-        page.wait_for_timeout(3000)
+        nav_t0 = time.monotonic()
+        from greatwalkbot.constants import GREATWALK_HASH
+
+        navigate_to_site(page, timeout_ms=self.navigation_timeout_ms)
+        nav_t1 = time.monotonic()
         page.evaluate(f"window.location.hash = '{GREATWALK_HASH}'")
-        page.wait_for_timeout(8000)
+        wait_for_great_walk_ui(page, timeout_ms=self.app_ready_timeout_ms)
+        app_t1 = time.monotonic()
 
-        self._select_track(page, track)
-        page.wait_for_timeout(2000)
-        self._click_search(page)
-        page.wait_for_timeout(15000)
-
-        payload = self._session.captured_payload()
-        if payload is None:
-            raise FetchError(
-                "No availability data captured. AWS WAF may have blocked the session; "
-                "retry with --headed."
-            )
-
-        return parse_gw_facility_response(payload, track, from_date, to_date)
-
-    @staticmethod
-    def _select_track(page: Page, track: Track) -> None:
-        element_id = track.dropdown_element_id
-        clicked = page.evaluate(
-            f"() => {{ const el = document.getElementById('{element_id}'); if (el) el.click(); return !!el; }}"
+        select_track_with_recovery(
+            page,
+            track,
+            navigation_timeout_ms=self.navigation_timeout_ms,
+            app_ready_timeout_ms=self.app_ready_timeout_ms,
         )
-        if not clicked:
-            raise RuntimeError(f"Could not select track dropdown item #{element_id}")
 
-    @staticmethod
-    def _click_search(page: Page) -> None:
-        clicked = page.evaluate(
-            """() => {
-                const btn = Array.from(document.querySelectorAll('button'))
-                    .find(b => b.textContent.trim() === 'Search' && b.offsetParent);
-                if (btn) { btn.click(); return true; }
-                return false;
-            }"""
+        click_search_button(page)
+        capture_started = time.monotonic()
+        payload = self._session.wait_for_capture(self.capture_timeout_ms)
+        capture_done = time.monotonic()
+
+        timing = TrackFetchTiming(
+            track_slug=track.slug,
+            navigation_seconds=nav_t1 - nav_t0,
+            app_ready_seconds=app_t1 - nav_t1,
+            capture_seconds=capture_done - capture_started,
+            total_seconds=capture_done - started,
         )
-        if not clicked:
-            raise RuntimeError("Could not find the Great Walk Search button on the page")
+
+        snapshot = parse_gw_facility_response(payload, track, from_date, to_date)
+        return snapshot, timing
+
+    def reset_poll_timings(self) -> None:
+        self.last_poll_track_timings = ()

@@ -10,7 +10,6 @@ from pathlib import Path
 
 from greatwalkbot.config import load_watch_config
 from greatwalkbot.display import format_availability_table
-from greatwalkbot.infra.retry import RetryPolicy
 from greatwalkbot.infra.shutdown import ShutdownController
 from greatwalkbot.logging_config import configure_logging
 from greatwalkbot.monitoring.dedupe import SqliteSeenAvailabilityStore
@@ -50,13 +49,11 @@ def _build_playwright_source(
     *,
     headed: bool,
     session_manager: SessionManager | None = None,
-    retry_policy: RetryPolicy | None = None,
     metrics: RuntimeMetrics | None = None,
 ) -> PlaywrightAvailabilitySource:
     return PlaywrightAvailabilitySource(
         headless=not headed,
         session_manager=session_manager,
-        retry_policy=retry_policy,
         metrics=metrics,
     )
 
@@ -100,11 +97,6 @@ def _cmd_watch(args: argparse.Namespace) -> int:
         metrics.flush()
 
         seen_store = SqliteSeenAvailabilityStore(DEFAULT_SEEN_DB)
-        retry_policy = RetryPolicy(
-            max_attempts=plan.retry.max_attempts,
-            base_delay_seconds=plan.retry.base_delay_seconds,
-            max_delay_seconds=plan.retry.max_delay_seconds,
-        )
 
         if source_name == "playwright":
             session_manager = SessionManager(headless=not args.headed)
@@ -112,7 +104,6 @@ def _cmd_watch(args: argparse.Namespace) -> int:
             source: AvailabilitySource = _build_playwright_source(
                 headed=args.headed,
                 session_manager=session_manager,
-                retry_policy=retry_policy,
                 metrics=metrics,
             )
         else:
@@ -260,19 +251,12 @@ def _cmd_preflight(args: argparse.Namespace) -> int:
         plan = load_watch_config(args.config)
         source_name = args.source or plan.source
 
-        retry_policy = RetryPolicy(
-            max_attempts=plan.retry.max_attempts,
-            base_delay_seconds=plan.retry.base_delay_seconds,
-            max_delay_seconds=plan.retry.max_delay_seconds,
-        )
-
         if source_name == "playwright":
             session_manager = SessionManager(headless=not args.headed)
             session_manager.start()
             source: AvailabilitySource = _build_playwright_source(
                 headed=args.headed,
                 session_manager=session_manager,
-                retry_policy=retry_policy,
             )
         else:
             source = _build_http_source()
