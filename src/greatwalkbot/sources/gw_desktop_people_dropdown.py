@@ -22,6 +22,7 @@ from greatwalkbot.sources.gw_desktop_form import (
 
 PEOPLE_VERIFY_TIMEOUT_MS = 5_000
 PEOPLE_OPEN_TIMEOUT_MS = 5_000
+PEOPLE_MENU_WAIT_TIMEOUT_MS = 5_000
 PEOPLE_POLL_INTERVAL_MS = 50
 MAX_CONTAINER_CANDIDATES = 10
 MAX_OPTION_CANDIDATES = 20
@@ -33,6 +34,11 @@ AssociationMethod = Literal[
     "geometry",
     "visible-popup",
     "unresolved",
+]
+
+ResolutionMethod = Literal[
+    "zero_based_option_id",
+    "generic_discovery",
 ]
 
 _DISCOVER_PEOPLE_DROPDOWN_JS = """
@@ -284,6 +290,107 @@ _DISCOVER_PEOPLE_DROPDOWN_JS = """
 }
 """
 
+_PROBE_ZERO_BASED_BINDING_JS = """
+({ peopleSize, menuSelector }) => {
+    const MAX_ANCESTOR = 5;
+    const optionId = `great-walk-people-${peopleSize - 1}`;
+
+    function visible(el) {
+        if (!el) return false;
+        const style = window.getComputedStyle(el);
+        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+        const rect = el.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+    }
+
+    function inMobile(el) {
+        if (!el) return false;
+        const id = el.id || '';
+        const cls = (el.className || '').toString();
+        if (id.includes('-mobile') || cls.includes('-mobile')) return true;
+        return !!el.closest('[id*="-mobile"], [class*="-mobile"]');
+    }
+
+    function normalizeText(el) {
+        return (el.textContent || '').replace(/\\s+/g, ' ').trim();
+    }
+
+    function ancestors(el) {
+        const chain = [];
+        let node = el;
+        for (let i = 0; i < MAX_ANCESTOR && node; i++) {
+            chain.push({
+                tag: node.tagName,
+                id: node.id || null,
+                class: (node.className || '').toString().slice(0, 80) || null,
+                role: node.getAttribute('role'),
+            });
+            node = node.parentElement;
+        }
+        return chain;
+    }
+
+    function describe(el) {
+        const rect = el.getBoundingClientRect();
+        return {
+            tag: el.tagName,
+            id: el.id || null,
+            class: (el.className || '').toString().slice(0, 120) || null,
+            role: el.getAttribute('role'),
+            aria_label: (el.getAttribute('aria-label') || '').slice(0, 100) || null,
+            text: normalizeText(el).slice(0, 40) || null,
+            visible: visible(el),
+            enabled: !el.disabled && el.getAttribute('aria-disabled') !== 'true',
+            likely_mobile: inMobile(el),
+            rect: {
+                x: Math.round(rect.x),
+                y: Math.round(rect.y),
+                width: Math.round(rect.width),
+                height: Math.round(rect.height),
+            },
+            ancestors: ancestors(el),
+        };
+    }
+
+    const menus = Array.from(document.querySelectorAll(menuSelector))
+        .filter(el => visible(el) && !inMobile(el));
+
+    const button = document.getElementById('great-walk-people-dropdown-button');
+    const buttonText = button ? normalizeText(button).slice(0, 40) : null;
+
+    let targetOptions = [];
+    if (menus.length === 1) {
+        const menu = menus[0];
+        targetOptions = Array.from(menu.querySelectorAll(`[id="${optionId}"]`))
+            .filter(el => el.id === optionId && visible(el) && !inMobile(el) && el.closest(menuSelector) === menu);
+        if (targetOptions.length === 0) {
+            const direct = menu.querySelector(`#${optionId}`);
+            if (direct && direct.id === optionId && visible(direct) && !inMobile(direct)) {
+                targetOptions = [direct];
+            }
+        }
+    }
+
+    const target = targetOptions.length === 1 ? describe(targetOptions[0]) : (
+        targetOptions.length > 0 ? describe(targetOptions[0]) : null
+    );
+
+    return {
+        requested_people: peopleSize,
+        computed_option_id: optionId,
+        menu_count: menus.length,
+        menus: menus.slice(0, 3).map(describe),
+        target_option_count: targetOptions.length,
+        target_option: target,
+        observed_target_text: target ? target.text : null,
+        menu_open: button ? button.getAttribute('aria-expanded') === 'true' : null,
+        trigger_value_before: buttonText,
+        button_aria_expanded: button ? button.getAttribute('aria-expanded') : null,
+        option_present: targetOptions.length > 0,
+    };
+}
+"""
+
 _WHOLE_NUMBER_RE = re.compile(r"(?<!\d)(\d+)(?!\d)")
 
 
@@ -305,6 +412,47 @@ class PeopleSelectionResult:
     people_dropdown_diagnostics: dict[str, Any] | None = None
 
 
+def zero_based_option_element_id(people_size: int) -> str:
+    """Map requested party size to the live zero-based People option element id."""
+    return f"great-walk-people-{people_size - 1}"
+
+
+def zero_based_option_selector(people_size: int) -> str:
+    return f"#{zero_based_option_element_id(people_size)}"
+
+
+def probe_zero_based_binding(page: PeopleDropdownPage, people_size: int) -> dict[str, Any]:
+    raw = page.evaluate(
+        _PROBE_ZERO_BASED_BINDING_JS,
+        {"peopleSize": people_size, "menuSelector": PEOPLE_LIST_SELECTOR},
+    )
+    return raw if isinstance(raw, dict) else {"menu_count": 0, "target_option_count": 0}
+
+
+def build_deterministic_binding_diagnostics(
+    probe: dict[str, Any],
+    *,
+    trigger_value_after: str | None = None,
+    failure_reason: str | None = None,
+) -> dict[str, Any]:
+    diag: dict[str, Any] = {
+        "requested_people": probe.get("requested_people"),
+        "computed_option_id": probe.get("computed_option_id"),
+        "menu_count": probe.get("menu_count"),
+        "menus": list(probe.get("menus") or [])[:3],
+        "target_option_count": probe.get("target_option_count"),
+        "target_option": probe.get("target_option"),
+        "observed_target_text": probe.get("observed_target_text"),
+        "menu_open": probe.get("menu_open"),
+        "trigger_value_before": probe.get("trigger_value_before"),
+    }
+    if trigger_value_after is not None:
+        diag["trigger_value_after"] = trigger_value_after
+    if failure_reason:
+        diag["failure_reason"] = failure_reason
+    return diag
+
+
 def _semantic_option_score(candidate: dict[str, Any], people_size: int) -> int | None:
     if candidate.get("likely_mobile"):
         return None
@@ -322,10 +470,10 @@ def _semantic_option_score(candidate: dict[str, Any], people_size: int) -> int |
     if re.search(rf"(?<!\d){people_size}(?!\d)", aria):
         return 3
     option_id = candidate.get("id") or ""
+    if option_id == f"great-walk-people-{people_size - 1}":
+        return 4
     if option_id == f"great-walk-people-{people_size}":
-        return 4
-    if re.search(rf"great-walk-people-{people_size}(?:$|[^0-9])", option_id):
-        return 4
+        return 5
     return None
 
 
@@ -429,6 +577,8 @@ def build_people_dropdown_diagnostics(
     after_close_state: dict[str, Any] | None = None,
     click_readiness: dict[str, Any] | None = None,
     open_screenshot_path: str | None = None,
+    resolution_method: ResolutionMethod | None = None,
+    deterministic_binding: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     diag: dict[str, Any] = {
         "button": discovery.get("button"),
@@ -444,6 +594,10 @@ def build_people_dropdown_diagnostics(
         "rejection_reasons": rejection_reasons[:20],
         "post_click_value": post_click_value,
     }
+    if resolution_method is not None:
+        diag["resolution_method"] = resolution_method
+    if deterministic_binding is not None:
+        diag["deterministic_binding"] = deterministic_binding
     if before_state is not None:
         diag["before_open"] = before_state
     if opened_state is not None:
@@ -478,6 +632,82 @@ def _summarize_discovery(discovery: dict[str, Any]) -> dict[str, Any]:
         "option_count": len(discovery.get("options") or []),
         "button_rect": button.get("rect"),
     }
+
+
+def _wait_for_zero_based_menu(
+    page: PeopleDropdownPage,
+    *,
+    timeout_ms: int = PEOPLE_MENU_WAIT_TIMEOUT_MS,
+) -> dict[str, Any]:
+    deadline = time.monotonic() + (timeout_ms / 1000.0)
+    last = probe_zero_based_binding(page, people_size=1)
+    while time.monotonic() < deadline:
+        last = probe_zero_based_binding(page, people_size=1)
+        if last.get("menu_count") == 1:
+            return last
+        page.wait_for_timeout(PEOPLE_POLL_INTERVAL_MS)
+    return last
+
+
+def _evaluate_zero_based_binding(
+    probe: dict[str, Any],
+    people_size: int,
+) -> tuple[Literal["matched", "absent", "failed"], list[str]]:
+    reasons: list[str] = []
+    menu_count = int(probe.get("menu_count") or 0)
+    if menu_count > 1:
+        reasons.append(f"ambiguous visible people menus: {menu_count}")
+        return "failed", reasons
+    if menu_count == 0:
+        reasons.append("visible people menu not found")
+        return "absent", reasons
+
+    target_count = int(probe.get("target_option_count") or 0)
+    if target_count == 0:
+        reasons.append(
+            f"deterministic option {probe.get('computed_option_id')!r} not found in visible menu"
+        )
+        return "absent", reasons
+
+    if target_count > 1:
+        reasons.append(f"ambiguous deterministic people options: {target_count}")
+        return "failed", reasons
+
+    observed = (probe.get("observed_target_text") or "").strip()
+    if observed != str(people_size):
+        reasons.append(
+            f"deterministic option text mismatch: expected {people_size!r}, observed {observed!r}"
+        )
+        return "failed", reasons
+
+    target = probe.get("target_option") or {}
+    if not target.get("visible", True):
+        reasons.append("deterministic option not visible")
+        return "failed", reasons
+    if target.get("likely_mobile"):
+        reasons.append("deterministic option is mobile")
+        return "failed", reasons
+    if not target.get("enabled", True):
+        reasons.append("deterministic option disabled")
+        return "failed", reasons
+
+    return "matched", reasons
+
+
+def _zero_based_option_locator(page: PeopleDropdownPage, people_size: int) -> Any:
+    mobile = page.locator("[id*='-mobile']")
+    menu = page.locator(PEOPLE_LIST_SELECTOR).filter(has_not=mobile)
+    if menu.count() != 1:
+        raise GreatWalkPeopleDropdownError(
+            f"Expected exactly one visible desktop People menu, found {menu.count()}",
+        )
+    option_id = zero_based_option_element_id(people_size)
+    option = menu.locator(f"#{option_id}").filter(has_not=mobile)
+    if option.count() != 1:
+        raise GreatWalkPeopleDropdownError(
+            f"Expected exactly one visible desktop People option {option_id!r}, found {option.count()}",
+        )
+    return option.first
 
 
 def _wait_for_people_dropdown_open(
@@ -647,14 +877,128 @@ def _wait_for_people_value(
     while time.monotonic() < deadline:
         state = read_desktop_form_state(page, binding, people_size=people_size)
         people_ctrl = state.get("people_control") or {}
-        if people_ctrl.get("matches_requested"):
-            return True, people_ctrl.get("normalized_value")
         last_value = people_ctrl.get("normalized_value")
         count = _extract_count(people_ctrl.get("visible_text"))
-        if count == people_size:
-            return True, str(count)
+        value_ok = people_ctrl.get("matches_requested") or count == people_size
+        expanded = people_ctrl.get("aria_expanded")
+        menu_closed = expanded == "false" or expanded is False
+        if value_ok and menu_closed:
+            return True, last_value or str(people_size)
         page.wait_for_timeout(PEOPLE_POLL_INTERVAL_MS)
     return False, last_value
+
+
+def _discovery_from_zero_based_probe(probe: dict[str, Any]) -> dict[str, Any]:
+    target = probe.get("target_option")
+    return {
+        "button": {
+            "text": probe.get("trigger_value_before"),
+            "aria_expanded": probe.get("button_aria_expanded"),
+        },
+        "dropdown_open": probe.get("menu_open"),
+        "containers": list(probe.get("menus") or []),
+        "options": [target] if target else [],
+    }
+
+
+def _select_via_generic_discovery(
+    page: PeopleDropdownPage,
+    binding: DesktopRootBinding,
+    people_size: int,
+    current: int | None,
+    *,
+    root_change: dict[str, Any] | None = None,
+) -> PeopleSelectionResult:
+    discovery = _wait_for_people_dropdown_open(page)
+    selected, association_method, rejection_reasons = _resolve_people_selection(
+        discovery,
+        people_size,
+    )
+
+    if selected is None:
+        diagnostics = build_people_dropdown_diagnostics(
+            discovery,
+            requested_people=people_size,
+            current_people=current,
+            association_method=association_method,
+            selected_candidate=None,
+            rejection_reasons=rejection_reasons,
+            opened_state=_summarize_discovery(discovery),
+            resolution_method="generic_discovery",
+        )
+        raise GreatWalkPeopleDropdownError(
+            f"Could not resolve desktop People option for {people_size}",
+            people_dropdown_diagnostics=diagnostics,
+        )
+
+    rediscovery = discover_people_dropdown_raw(page)
+    selected, association_method, rejection_reasons = _resolve_people_selection(
+        rediscovery,
+        people_size,
+    )
+    if selected is None:
+        diagnostics = build_people_dropdown_diagnostics(
+            rediscovery,
+            requested_people=people_size,
+            current_people=current,
+            association_method=association_method,
+            selected_candidate=None,
+            rejection_reasons=rejection_reasons
+            + ["option could not be re-resolved immediately before click"],
+            opened_state=_summarize_discovery(rediscovery),
+            resolution_method="generic_discovery",
+        )
+        raise GreatWalkPeopleDropdownError(
+            f"Could not re-resolve desktop People option for {people_size} before click",
+            people_dropdown_diagnostics=diagnostics,
+        )
+
+    option_locator = _option_locator(page, selected)
+    try:
+        if hasattr(option_locator, "is_enabled") and not option_locator.is_enabled():
+            raise GreatWalkPeopleDropdownError(
+                f"Desktop People option for {people_size} is disabled",
+                people_dropdown_diagnostics=build_people_dropdown_diagnostics(
+                    rediscovery,
+                    requested_people=people_size,
+                    current_people=current,
+                    association_method=association_method,
+                    selected_candidate=selected,
+                    rejection_reasons=rejection_reasons + ["selected option disabled"],
+                    resolution_method="generic_discovery",
+                ),
+            )
+    except GreatWalkPeopleDropdownError:
+        raise
+    except Exception:
+        pass
+
+    option_locator.click(timeout=5_000)
+    verified, post_value = _wait_for_people_value(page, binding, people_size)
+    diagnostics = build_people_dropdown_diagnostics(
+        rediscovery,
+        requested_people=people_size,
+        current_people=current,
+        association_method=association_method,
+        selected_candidate=selected,
+        rejection_reasons=rejection_reasons,
+        post_click_value=post_value,
+        opened_state=_summarize_discovery(rediscovery),
+        resolution_method="generic_discovery",
+    )
+
+    if not verified:
+        raise GreatWalkPeopleDropdownError(
+            f"Desktop People control did not verify as {people_size} after selection",
+            people_dropdown_diagnostics=diagnostics,
+        )
+
+    return PeopleSelectionResult(
+        action="changed_and_verified",
+        requested_people=people_size,
+        normalized_value=post_value,
+        people_dropdown_diagnostics=diagnostics,
+    )
 
 
 def _resolve_people_selection(
@@ -710,89 +1054,121 @@ def select_desktop_people(
         root_change=root_change,
     )
 
-    discovery = _wait_for_people_dropdown_open(page)
-    selected, association_method, rejection_reasons = _resolve_people_selection(
-        discovery,
-        people_size,
-    )
+    _wait_for_zero_based_menu(page)
+    probe = probe_zero_based_binding(page, people_size)
+    status, rejection_reasons = _evaluate_zero_based_binding(probe, people_size)
 
-    if selected is None:
+    if status == "failed":
         diagnostics = build_people_dropdown_diagnostics(
-            discovery,
+            _discovery_from_zero_based_probe(probe),
             requested_people=people_size,
             current_people=current,
-            association_method=association_method,
-            selected_candidate=None,
+            association_method="id-pattern",
+            selected_candidate=probe.get("target_option"),
             rejection_reasons=rejection_reasons,
-            opened_state=_summarize_discovery(discovery),
+            opened_state={
+                "dropdown_open": probe.get("menu_open"),
+                "button_aria_expanded": probe.get("button_aria_expanded"),
+                "button_text": probe.get("trigger_value_before"),
+            },
+            resolution_method="zero_based_option_id",
+            deterministic_binding=build_deterministic_binding_diagnostics(
+                probe,
+                failure_reason=rejection_reasons[0] if rejection_reasons else None,
+            ),
         )
         raise GreatWalkPeopleDropdownError(
-            f"Could not resolve desktop People option for {people_size}",
+            f"Deterministic desktop People binding failed for {people_size}",
             people_dropdown_diagnostics=diagnostics,
         )
 
-    rediscovery = discover_people_dropdown_raw(page)
-    selected, association_method, rejection_reasons = _resolve_people_selection(
-        rediscovery,
-        people_size,
-    )
-    if selected is None:
-        diagnostics = build_people_dropdown_diagnostics(
-            rediscovery,
-            requested_people=people_size,
-            current_people=current,
-            association_method=association_method,
-            selected_candidate=None,
-            rejection_reasons=rejection_reasons
-            + ["option could not be re-resolved immediately before click"],
-            opened_state=_summarize_discovery(rediscovery),
-        )
-        raise GreatWalkPeopleDropdownError(
-            f"Could not re-resolve desktop People option for {people_size} before click",
-            people_dropdown_diagnostics=diagnostics,
-        )
-
-    option_locator = _option_locator(page, selected)
-    try:
-        if hasattr(option_locator, "is_enabled") and not option_locator.is_enabled():
-            raise GreatWalkPeopleDropdownError(
-                f"Desktop People option for {people_size} is disabled",
-                people_dropdown_diagnostics=build_people_dropdown_diagnostics(
-                    rediscovery,
-                    requested_people=people_size,
-                    current_people=current,
-                    association_method=association_method,
-                    selected_candidate=selected,
-                    rejection_reasons=rejection_reasons + ["selected option disabled"],
+    if status == "matched":
+        probe = probe_zero_based_binding(page, people_size)
+        status, rejection_reasons = _evaluate_zero_based_binding(probe, people_size)
+        if status != "matched":
+            diagnostics = build_people_dropdown_diagnostics(
+                _discovery_from_zero_based_probe(probe),
+                requested_people=people_size,
+                current_people=current,
+                association_method="id-pattern",
+                selected_candidate=probe.get("target_option"),
+                rejection_reasons=rejection_reasons
+                + ["deterministic option could not be re-resolved immediately before click"],
+                resolution_method="zero_based_option_id",
+                deterministic_binding=build_deterministic_binding_diagnostics(
+                    probe,
+                    failure_reason=rejection_reasons[0] if rejection_reasons else None,
                 ),
             )
-    except GreatWalkPeopleDropdownError:
-        raise
-    except Exception:
-        pass
+            raise GreatWalkPeopleDropdownError(
+                f"Could not re-resolve deterministic desktop People option for {people_size}",
+                people_dropdown_diagnostics=diagnostics,
+            )
 
-    option_locator.click(timeout=5_000)
-    verified, post_value = _wait_for_people_value(page, binding, people_size)
-    diagnostics = build_people_dropdown_diagnostics(
-        rediscovery,
-        requested_people=people_size,
-        current_people=current,
-        association_method=association_method,
-        selected_candidate=selected,
-        rejection_reasons=rejection_reasons,
-        post_click_value=post_value,
-        opened_state=_summarize_discovery(rediscovery),
-    )
+        option_locator = _zero_based_option_locator(page, people_size)
+        try:
+            if hasattr(option_locator, "is_enabled") and not option_locator.is_enabled():
+                raise GreatWalkPeopleDropdownError(
+                    f"Desktop People option for {people_size} is disabled",
+                    people_dropdown_diagnostics=build_people_dropdown_diagnostics(
+                        _discovery_from_zero_based_probe(probe),
+                        requested_people=people_size,
+                        current_people=current,
+                        association_method="id-pattern",
+                        selected_candidate=probe.get("target_option"),
+                        rejection_reasons=["deterministic option disabled"],
+                        resolution_method="zero_based_option_id",
+                        deterministic_binding=build_deterministic_binding_diagnostics(probe),
+                    ),
+                )
+        except GreatWalkPeopleDropdownError:
+            raise
+        except Exception:
+            pass
 
-    if not verified:
-        raise GreatWalkPeopleDropdownError(
-            f"Desktop People control did not verify as {people_size} after selection",
+        option_locator.click(timeout=5_000)
+        verified, post_value = _wait_for_people_value(page, binding, people_size)
+        after_probe = probe_zero_based_binding(page, people_size)
+        diagnostics = build_people_dropdown_diagnostics(
+            _discovery_from_zero_based_probe(after_probe),
+            requested_people=people_size,
+            current_people=current,
+            association_method="id-pattern",
+            selected_candidate=probe.get("target_option"),
+            rejection_reasons=[],
+            post_click_value=post_value,
+            opened_state={
+                "dropdown_open": probe.get("menu_open"),
+                "button_aria_expanded": probe.get("button_aria_expanded"),
+                "button_text": probe.get("trigger_value_before"),
+            },
+            resolution_method="zero_based_option_id",
+            deterministic_binding=build_deterministic_binding_diagnostics(
+                probe,
+                trigger_value_after=post_value,
+            ),
+        )
+        if not verified:
+            diagnostics["deterministic_binding"] = build_deterministic_binding_diagnostics(
+                after_probe,
+                trigger_value_after=post_value,
+                failure_reason="trigger did not verify after deterministic selection",
+            )
+            raise GreatWalkPeopleDropdownError(
+                f"Desktop People control did not verify as {people_size} after selection",
+                people_dropdown_diagnostics=diagnostics,
+            )
+        return PeopleSelectionResult(
+            action="changed_and_verified",
+            requested_people=people_size,
+            normalized_value=post_value,
             people_dropdown_diagnostics=diagnostics,
         )
 
-    return PeopleSelectionResult(
-        action="changed_and_verified",
-        requested_people=people_size,
-        normalized_value=post_value,
-        people_dropdown_diagnostics=diagnostics,
+    return _select_via_generic_discovery(
+        page,
+        binding,
+        people_size,
+        current,
+        root_change=root_change,
     )

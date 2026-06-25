@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import date
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -12,15 +13,19 @@ from greatwalkbot.infra.errors import GreatWalkPeopleDropdownError
 from greatwalkbot.models import Track
 from greatwalkbot.sources.gw_desktop_form import (
     DESKTOP_ROOT_SELECTOR,
+    PEOPLE_LIST_SELECTOR,
     DesktopRootBinding,
     prepare_desktop_search_form,
 )
 from greatwalkbot.sources.gw_desktop_people_dropdown import (
+    _evaluate_zero_based_binding,
     build_people_dropdown_diagnostics,
     inspect_people_dropdown,
+    probe_zero_based_binding,
     resolve_people_option,
     resolve_people_option_container,
     select_desktop_people,
+    zero_based_option_element_id,
 )
 
 MILFORD = Track("milford", "Milford Track", 873, 4, fixed_nights=3)
@@ -52,8 +57,9 @@ def _option(
     text: str | None = None,
 ) -> dict:
     return {
-        "tag": "DIV",
-        "id": option_id or f"great-walk-people-{people}" + ("-mobile" if mobile else ""),
+        "tag": "A",
+        "id": option_id
+        or (f"great-walk-people-{people - 1}" + ("-mobile" if mobile else "")),
         "text": text if text is not None else str(people),
         "aria_label": None,
         "visible": visible,
@@ -116,6 +122,18 @@ class _PeoplePage:
         self._locators: dict[str, MagicMock] = {}
         self.screenshots: list[str] = []
 
+    def _all_options(self) -> list[dict]:
+        options = list(self.options)
+        if self.portal_options:
+            options.extend(self.portal_options)
+        return options
+
+    def _container_dict(self) -> dict:
+        containers = self.containers
+        if containers is None:
+            containers = [_container()] if self.opened else []
+        return containers[0] if containers else _container()
+
     def _state(self) -> dict:
         return {
             "desktop_root_count": 1,
@@ -133,6 +151,42 @@ class _PeoplePage:
             "search_button": {"visible_text": "Search", "enabled": True},
             "validation_messages": [],
             "loading_present": False,
+        }
+
+    def _zero_based_probe(self, people_size: int) -> dict:
+        option_id = zero_based_option_element_id(people_size)
+        if not self.opened:
+            return {
+                "requested_people": people_size,
+                "computed_option_id": option_id,
+                "menu_count": 0,
+                "menus": [],
+                "target_option_count": 0,
+                "target_option": None,
+                "observed_target_text": None,
+                "menu_open": False,
+                "trigger_value_before": str(self.people),
+                "button_aria_expanded": "false",
+                "option_present": False,
+            }
+        targets = [
+            o
+            for o in self._all_options()
+            if o.get("id") == option_id and o.get("visible", True) and not o.get("likely_mobile")
+        ]
+        target = targets[0] if len(targets) == 1 else (targets[0] if targets else None)
+        return {
+            "requested_people": people_size,
+            "computed_option_id": option_id,
+            "menu_count": 1,
+            "menus": [self._container_dict()],
+            "target_option_count": len(targets),
+            "target_option": target,
+            "observed_target_text": target.get("text") if target else None,
+            "menu_open": True,
+            "trigger_value_before": str(self.people),
+            "button_aria_expanded": "true",
+            "option_present": len(targets) > 0,
         }
 
     def _discovery_payload(self) -> dict:
@@ -159,61 +213,92 @@ class _PeoplePage:
     def evaluate(self, expression: str, arg=None) -> object:
         if isinstance(arg, dict) and "rootSelector" in arg:
             return {"found": True, "clickable": True, "desktop_root_count": 1}
+        if isinstance(arg, dict) and "peopleSize" in arg:
+            return self._zero_based_probe(int(arg["peopleSize"]))
         if isinstance(arg, dict) and "buttonSelector" in arg:
             return self._discovery_payload()
         if "desktop_root_count" in expression or "readBtn" in expression:
             return self._state()
         return {}
 
-    def _make_option_click_locator(self) -> MagicMock:
+    def _option_locator_for_id(self, option_id: str) -> MagicMock:
         loc = MagicMock()
-        loc.count.return_value = 1
+        matching = self.opened and any(
+            o.get("id") == option_id and o.get("visible", True) and not o.get("likely_mobile")
+            for o in self._all_options()
+        )
+        loc.count.return_value = 1 if matching else 0
         loc.first = loc
         loc.is_enabled.return_value = True
         loc.filter.return_value = loc
+        match = re.fullmatch(r"great-walk-people-(\d+)", option_id)
+        if match and "-mobile" not in option_id:
+            target_people = int(match.group(1)) + 1
+        else:
+            opt = next((o for o in self._all_options() if o.get("id") == option_id), None)
+            target_people = int(opt["text"]) if opt and str(opt.get("text", "")).isdigit() else None
 
-        def _click(**_kwargs: object) -> None:
-            self.clicks += 1
-            self.people = 2
+        if target_people is not None:
 
-        loc.click.side_effect = _click
+            def _click(**_kwargs: object) -> None:
+                self.clicks += 1
+                self.people = target_people
+                self.opened = False
+
+            loc.click.side_effect = _click
         return loc
 
-    def get_by_text(self, text: str, exact: bool = False) -> MagicMock:
-        if text == "2" and exact:
-            return self._make_option_click_locator()
-        loc = MagicMock()
-        loc.count.return_value = 0
-        loc.filter.return_value = loc
-        return loc
+    def _menu_locator(self) -> MagicMock:
+        menu = self._locators.get("menu")
+        if menu is None:
+            menu = MagicMock()
+            menu.first = menu
+            menu.filter.return_value = menu
+            menu.locator.side_effect = lambda inner: self.locator(inner)
+            self._locators["menu"] = menu
+        menu.count.return_value = 1 if self.opened else 0
+        return menu
 
     def locator(self, selector: str) -> MagicMock:
-        if "great-walk-people-2" in selector and "-mobile" not in selector:
-            return self._make_option_click_locator()
+        if selector == "[id*='-mobile']":
+            mobile = MagicMock()
+            mobile.count.return_value = 0
+            return mobile
+        if selector == PEOPLE_LIST_SELECTOR:
+            return self._menu_locator()
+        if selector.startswith("#"):
+            return self._option_locator_for_id(selector[1:])
         if selector not in self._locators:
             loc = MagicMock()
             loc.count.return_value = 1
             loc.first = loc
             loc.is_enabled.return_value = True
             loc.filter.return_value = loc
-
-            def nested(inner: str) -> MagicMock:
-                inner_loc = MagicMock()
-                inner_loc.first = inner_loc
-                inner_loc.count.return_value = 1
-                inner_loc.is_enabled.return_value = True
-
-                def _click(**_kwargs: object) -> None:
-                    self.clicks += 1
-                    if "great-walk-people-2" in inner and "-mobile" not in inner:
-                        self.people = 2
-
-                inner_loc.click.side_effect = _click
-                return inner_loc
-
-            loc.locator.side_effect = nested
+            loc.locator.side_effect = lambda inner: self.locator(inner)
             self._locators[selector] = loc
         return self._locators[selector]
+
+    def get_by_text(self, text: str, exact: bool = False) -> MagicMock:
+        if exact and any(
+            o.get("text") == text and o.get("visible", True) and not o.get("likely_mobile")
+            for o in self._all_options()
+        ):
+            loc = MagicMock()
+            loc.count.return_value = 1
+            loc.first = loc
+            loc.filter.return_value = loc
+            loc.is_enabled.return_value = True
+
+            def _click(**_kwargs: object) -> None:
+                self.people = int(text)
+                self.opened = False
+
+            loc.click.side_effect = _click
+            return loc
+        loc = MagicMock()
+        loc.count.return_value = 0
+        loc.filter.return_value = loc
+        return loc
 
     def wait_for_timeout(self, timeout: int) -> None:
         return None
@@ -233,6 +318,11 @@ def _click_opens_dropdown(page: _PeoplePage, *args: object, **kwargs: object) ->
     page.opened = True
 
 
+def test_zero_based_option_id_mapping():
+    assert zero_based_option_element_id(1) == "great-walk-people-0"
+    assert zero_based_option_element_id(2) == "great-walk-people-1"
+
+
 def test_people_already_matched_skips_click():
     page = _PeoplePage(people=2)
     binding = DesktopRootBinding(selector=DESKTOP_ROOT_SELECTOR, count=1)
@@ -242,6 +332,105 @@ def test_people_already_matched_skips_click():
         result = select_desktop_people(page, 2, binding)
     click.assert_not_called()
     assert result.action == "already_matched"
+
+
+def test_zero_based_people_two_resolves_great_walk_people_1():
+    page = _PeoplePage(people=1)
+    binding = DesktopRootBinding(selector=DESKTOP_ROOT_SELECTOR, count=1)
+    with patch(
+        "greatwalkbot.sources.gw_desktop_people_dropdown.click_desktop_control",
+        side_effect=_click_opens_dropdown,
+    ):
+        with patch(
+            "greatwalkbot.sources.gw_desktop_people_dropdown.wait_for_control_clickable"
+        ):
+            result = select_desktop_people(page, 2, binding)
+    assert result.action == "changed_and_verified"
+    assert result.normalized_value == "2"
+    assert page.people == 2
+    assert not page.opened
+    diag = result.people_dropdown_diagnostics
+    assert diag is not None
+    assert diag["resolution_method"] == "zero_based_option_id"
+    assert diag["deterministic_binding"]["computed_option_id"] == "great-walk-people-1"
+
+
+def test_zero_based_people_one_resolves_great_walk_people_0():
+    page = _PeoplePage(people=2, options=[_option(1), _option(2)])
+    binding = DesktopRootBinding(selector=DESKTOP_ROOT_SELECTOR, count=1)
+    with patch(
+        "greatwalkbot.sources.gw_desktop_people_dropdown.click_desktop_control",
+        side_effect=_click_opens_dropdown,
+    ):
+        with patch(
+            "greatwalkbot.sources.gw_desktop_people_dropdown.wait_for_control_clickable"
+        ):
+            result = select_desktop_people(page, 1, binding)
+    assert result.normalized_value == "1"
+    assert page.people == 1
+
+
+def test_zero_based_text_mismatch_raises():
+    page = _PeoplePage(
+        people=1,
+        options=[_option(1), {**_option(2), "text": "99"}],
+    )
+    binding = DesktopRootBinding(selector=DESKTOP_ROOT_SELECTOR, count=1)
+    with patch(
+        "greatwalkbot.sources.gw_desktop_people_dropdown.click_desktop_control",
+        side_effect=_click_opens_dropdown,
+    ):
+        with patch(
+            "greatwalkbot.sources.gw_desktop_people_dropdown.wait_for_control_clickable"
+        ):
+            with pytest.raises(GreatWalkPeopleDropdownError, match="Deterministic") as exc_info:
+                select_desktop_people(page, 2, binding)
+    diag = exc_info.value.people_dropdown_diagnostics
+    assert diag is not None
+    assert diag["resolution_method"] == "zero_based_option_id"
+    assert diag["deterministic_binding"]["computed_option_id"] == "great-walk-people-1"
+    assert "text mismatch" in diag["deterministic_binding"]["failure_reason"]
+
+
+def test_zero_based_target_absent_falls_back_to_generic():
+    portal_option = _option(
+        2,
+        option_id="portal-people-2",
+        container_id="great-walk-people-portal-list",
+        association_hint="geometry",
+    )
+    page = _PeoplePage(
+        people=1,
+        options=[_option(1)],
+        containers=[_container(container_id="great-walk-people-portal-list", hint="geometry")],
+        portal_options=[portal_option],
+    )
+    binding = DesktopRootBinding(selector=DESKTOP_ROOT_SELECTOR, count=1)
+    with patch(
+        "greatwalkbot.sources.gw_desktop_people_dropdown.click_desktop_control",
+        side_effect=_click_opens_dropdown,
+    ):
+        with patch(
+            "greatwalkbot.sources.gw_desktop_people_dropdown.wait_for_control_clickable"
+        ):
+            result = select_desktop_people(page, 2, binding)
+    assert result.normalized_value == "2"
+    assert result.people_dropdown_diagnostics is not None
+    assert result.people_dropdown_diagnostics["resolution_method"] == "generic_discovery"
+
+
+def test_zero_based_mobile_option_excluded():
+    page = _PeoplePage(
+        people=1,
+        options=[
+            _option(1),
+            _option(2, mobile=True, option_id="great-walk-people-mobile-1", text="2"),
+        ],
+    )
+    probe = page._zero_based_probe(2)
+    status, reasons = _evaluate_zero_based_binding(probe, 2)
+    assert status == "absent"
+    assert any("not found" in reason for reason in reasons)
 
 
 def test_custom_dropdown_selects_semantic_option_two():
@@ -282,7 +471,7 @@ def test_hidden_mobile_option_with_matching_text_rejected():
     discovery = _discovery(
         options=[
             {
-                **_option(2, mobile=True, option_id="great-walk-people-mobile-2"),
+                **_option(2, mobile=True, option_id="great-walk-people-mobile-1"),
                 "visible": False,
             },
             _option(1),
@@ -324,7 +513,7 @@ def test_portal_options_outside_desktop_root_resolve():
     )
     portal_option = _option(
         2,
-        option_id="great-walk-people-2",
+        option_id="portal-people-2",
         container_id="great-walk-people-portal-list",
         association_hint="geometry",
     )
@@ -340,7 +529,7 @@ def test_portal_options_outside_desktop_root_resolve():
         association_method=method,
     )
     assert selected is not None
-    assert selected["id"] == "great-walk-people-2"
+    assert selected["text"] == "2"
     assert resolved_method in ("geometry", "id-pattern", "option-id-pattern")
 
 
@@ -396,14 +585,15 @@ def test_geometry_fallback_container():
 def test_select_portal_option_updates_trigger():
     portal_option = _option(
         2,
-        option_id="great-walk-people-2",
+        option_id="portal-people-2",
         container_id="great-walk-people-portal-list",
         association_hint="option-id-pattern",
     )
     page = _PeoplePage(
         people=1,
+        options=[_option(1)],
         containers=[_container(container_id="great-walk-people-portal-list", hint="geometry")],
-        portal_options=[portal_option, _option(1, container_id="great-walk-people-portal-list")],
+        portal_options=[portal_option],
     )
     binding = DesktopRootBinding(selector=DESKTOP_ROOT_SELECTOR, count=1)
     with patch(
@@ -418,7 +608,7 @@ def test_select_portal_option_updates_trigger():
     assert page.people == 2
 
 
-def test_verification_waits_until_button_updates():
+def test_verification_waits_until_button_updates_and_menu_closes():
     page = _PeoplePage(people=1)
     binding = DesktopRootBinding(selector=DESKTOP_ROOT_SELECTOR, count=1)
     with patch(
@@ -430,6 +620,7 @@ def test_verification_waits_until_button_updates():
         ):
             result = select_desktop_people(page, 2, binding)
     assert result.normalized_value == "2"
+    assert not page.opened
 
 
 def test_remains_one_raises_with_diagnostics():
@@ -445,7 +636,7 @@ def test_remains_one_raises_with_diagnostics():
             "greatwalkbot.sources.gw_desktop_people_dropdown.wait_for_control_clickable"
         ):
             with patch(
-                "greatwalkbot.sources.gw_desktop_people_dropdown._option_locator",
+                "greatwalkbot.sources.gw_desktop_people_dropdown._zero_based_option_locator",
                 return_value=noop_loc,
             ):
                 with pytest.raises(GreatWalkPeopleDropdownError, match="did not verify") as exc_info:
