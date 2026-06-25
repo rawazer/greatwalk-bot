@@ -102,18 +102,32 @@ Bottleneck spaces on a complete itinerary = minimum `TotalAvailable` across requ
 - **Locks and cart state:** `TotalAvailable` may change between check and book; the bot does not call unit-lock endpoints.
 - **WAF:** Direct HTTP may be blocked; Playwright is the operational fetch path. A missing `greatwalkplacefacility` response after Search is **not** classified as WAF unless challenge indicators appear in network headers or page HTML.
 
-## Selection and capture (Milestone 9.2)
+## Selection and capture (Milestone 9.2–9.3)
 
 Before waiting for `POST search/greatwalkplacefacility`, the bot:
 
 1. Opens the Great Walk dropdown (`great-walk-dropdown-button` or mobile variant).
 2. Clicks the desktop or mobile option id (`great-walk-{n}` / `great-walk-mobile-{n}`).
 3. Waits until selection **commits** — selected UI state or `GET search/getgreatwalksearchdata/placeId/{id}` with HTTP 200.
-4. Registers an availability response listener, then clicks **Search**.
+4. Captures a sanitized **search form state** (track label, start date, nights, Search button enabled/visible, validation text, loading overlay).
+5. Sets start date (`#great-walk-start-date`) and nights (`#great-walk-nights` or equivalent) in the SPA controls and verifies DOM reflection.
+6. Registers a post-search response listener, clicks the enabled Search control (`#great-walk-search-button` or equivalent), and verifies an observable transition (network activity, loading overlay, results container, or validation error).
 
-If step 3 fails: `TrackSelectionNotCommittedError` (one view recovery, then retry). If step 4 sees no matching request: `AvailabilityRequestNotObservedError`. Non-2xx availability responses: `AvailabilityRequestFailedError`. WAF only when concrete signals are recorded.
+**Error classification (no generic WAF guess):**
 
-Failed fetches write `network_timeline` (sanitized path, method, status, candidate flags) into `logs/diagnostics/*/summary.json`.
+| Condition | Error |
+|-----------|-------|
+| Selection not committed | `TrackSelectionNotCommittedError` |
+| Search disabled / validation message | `SearchFormValidationError` (includes `search_form_state` in diagnostics) |
+| Selection OK, Search clicked, no post-search request | `AvailabilitySearchNotDispatchedError` |
+| Post-search request, bad status | `AvailabilityRequestFailedError` |
+| WAF only with concrete signals (`x-amzn-waf-action`, `awswaf`, etc.) | `WafChallengeSuspectedError` |
+
+`btChecker is not defined` page errors alone are **not** WAF evidence.
+
+Failed fetches write `network_timeline` and `search_form_state` into `logs/diagnostics/*/summary.json`.
+
+**Debug CLI:** `gwbot debug-search config.yaml --track routeburn --date 2026-12-03` runs one read-only browser attempt (no Telegram, no dedupe) and prints form state, search outcome, and candidate network timeline.
 
 ## Diagnostics
 

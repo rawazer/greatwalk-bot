@@ -24,6 +24,7 @@ from greatwalkbot.sources.session_manager import SessionManager
 from greatwalkbot.monitoring.trip_fit import check_trip_feasible_in_principle
 from greatwalkbot.plan_check import format_plan_check
 from greatwalkbot.bookings import format_bookings
+from greatwalkbot.debug_search import run_debug_search
 from greatwalkbot.preflight import format_preflight_report, run_preflight
 from greatwalkbot.tracks import resolve_track
 
@@ -243,6 +244,24 @@ def _cmd_explain_availability(args: argparse.Namespace) -> int:
         return 1
 
 
+def _cmd_debug_search(args: argparse.Namespace) -> int:
+    try:
+        configure_logging(None)
+        plan = load_watch_config(args.config)
+        track = resolve_track(args.track)
+        report = run_debug_search(
+            plan,
+            track,
+            start_date=args.date,
+            headed=args.headed,
+        )
+        print(report.to_text())
+        return 0 if report.result == "success" else 1
+    except (ValueError, RuntimeError, FileNotFoundError) as exc:
+        logger.error("Error: %s", exc)
+        return 1
+
+
 def _cmd_preflight(args: argparse.Namespace) -> int:
     session_manager: SessionManager | None = None
 
@@ -382,6 +401,20 @@ def main(argv: list[str] | None = None) -> int:
     )
     explain.set_defaults(func=_cmd_explain_availability)
 
+    debug_search = subparsers.add_parser(
+        "debug-search",
+        help="Single read-only Great Walk search attempt with sanitized diagnostics",
+    )
+    debug_search.add_argument("config", type=Path, help="Path to watch configuration YAML")
+    debug_search.add_argument("--track", required=True, help="Track slug (e.g. routeburn)")
+    debug_search.add_argument("--date", type=_parse_date, required=True, help="Candidate start date")
+    debug_search.add_argument(
+        "--headed",
+        action="store_true",
+        help="Show browser window for troubleshooting",
+    )
+    debug_search.set_defaults(func=_cmd_debug_search)
+
     preflight = subparsers.add_parser(
         "preflight",
         help="Validate config, feasibility, notifications, and read-only DOC fetch",
@@ -412,6 +445,7 @@ def main(argv: list[str] | None = None) -> int:
         "plan-check",
         "bookings",
         "explain-availability",
+        "debug-search",
         "preflight",
     ):
         configure_logging(None)

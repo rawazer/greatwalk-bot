@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 from contextlib import contextmanager
-from unittest.mock import MagicMock
+from datetime import date
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from greatwalkbot.infra.errors import (
     AvailabilityRequestNotObservedError,
+    AvailabilitySearchNotDispatchedError,
     TrackSelectionNotCommittedError,
     WafChallengeSuspectedError,
 )
@@ -98,6 +100,7 @@ def test_selection_visible_but_not_committed_classified():
     error = classify_capture_failure(
         recorder,
         selection_committed=False,
+        search_submitted=False,
         place_id=MILFORD.place_id,
         timeout_ms=20_000,
     )
@@ -145,10 +148,11 @@ def test_no_capture_without_waf_evidence_is_not_waf_error():
     error = classify_capture_failure(
         recorder,
         selection_committed=True,
+        search_submitted=True,
         place_id=ROUTEBURN.place_id,
         timeout_ms=20_000,
     )
-    assert isinstance(error, AvailabilityRequestNotObservedError)
+    assert isinstance(error, AvailabilitySearchNotDispatchedError)
     assert "WAF" not in str(error)
     assert not isinstance(error, WafChallengeSuspectedError)
 
@@ -160,6 +164,7 @@ def test_waf_error_only_with_concrete_signals():
     error = classify_capture_failure(
         recorder,
         selection_committed=True,
+        search_submitted=True,
         place_id=MILFORD.place_id,
         timeout_ms=20_000,
     )
@@ -227,8 +232,18 @@ def test_capture_failure_after_search_uses_typed_error():
     session._captured_payload = None
     session._selection_committed = True
     session._current_request_body = {"placeId": MILFORD.place_id}
+    session._search_submitted = True
+    session._last_form_state = {"search_button_enabled": True}
     session._network = NetworkRecorder()
     session._network.begin_cycle(place_id=MILFORD.place_id)
+    session._network._append(
+        phase="response",
+        method="GET",
+        path="search/getgreatwalksearchdata/placeId/{id}",
+        status=200,
+        content_type="application/json",
+        selection_metadata_match=True,
+    )
     page = MagicMock()
 
     @contextmanager
@@ -240,5 +255,14 @@ def test_capture_failure_after_search_uses_typed_error():
     page.content.return_value = "<html>great walk</html>"
     session._page = page
 
-    with pytest.raises(AvailabilityRequestNotObservedError):
-        session.capture_availability_after_search(timeout_ms=100)
+    with patch(
+        "greatwalkbot.sources.session_manager.submit_great_walk_search",
+        return_value={"search_click_transition": None},
+    ):
+        with pytest.raises(AvailabilitySearchNotDispatchedError):
+            session.capture_availability_after_search(
+                track=MILFORD,
+                start_date=date(2026, 12, 3),
+                nights=3,
+                timeout_ms=100,
+            )

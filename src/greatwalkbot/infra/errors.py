@@ -70,3 +70,26 @@ class WafChallengeSuspectedError(RetryableError):
         super().__init__(message)
         self.signals = signals
 
+
+class SearchFormValidationError(RetryableError):
+    """Great Walk search form is invalid or Search is not actionable."""
+
+    def __init__(self, message: str, *, form_state: dict | None = None) -> None:
+        super().__init__(message)
+        self.form_state = form_state
+
+
+class AvailabilitySearchNotDispatchedError(RetryableError):
+    """Selection committed but Search did not dispatch an availability request."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        form_state: dict | None = None,
+        path: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.form_state = form_state
+        self.path = path
+

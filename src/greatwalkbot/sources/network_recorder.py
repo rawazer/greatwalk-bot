@@ -20,8 +20,16 @@ GREAT_WALK_CANDIDATE_PATHS: tuple[str, ...] = (
 AVAILABILITY_PAYLOAD_PATH = "search/greatwalkplacefacility"
 SELECTION_METADATA_PATH = "search/getgreatwalksearchdata"
 
-_WAF_URL_MARKERS = ("awswaf", "captcha", "challenge")
-_WAF_CONTENT_MARKERS = ("x-amzn-waf-action", "captcha", "aws-waf")
+POST_SEARCH_RESPONSE_PATHS: tuple[str, ...] = (
+    "search/greatwalkplacefacility",
+    "search/grid",
+    "search/getgreatwalkfacilityinformation",
+)
+
+# Only concrete AWS WAF indicators — not generic "challenge" or "captcha" substrings.
+_WAF_URL_MARKERS = ("awswaf",)
+_WAF_HEADER_MARKERS = ("x-amzn-waf-action",)
+_CONCRETE_WAF_HTML_MARKERS = ("x-amzn-waf-action", "awswaf", "aws-waf-token")
 
 
 @dataclass(frozen=True)
@@ -77,8 +85,34 @@ def path_is_selection_metadata(path: str, *, place_id: int | None = None) -> boo
     return f"placeid/{place_id}" in path.lower().replace("-", "")
 
 
+def path_is_post_search_candidate(path: str) -> bool:
+    normalized = path.lower()
+    if SELECTION_METADATA_PATH in normalized:
+        return False
+    return any(marker in normalized for marker in POST_SEARCH_RESPONSE_PATHS)
+
+
 def response_body_is_availability_payload(data: Any) -> bool:
     return isinstance(data, dict) and "GreatWalkFacilityData" in data
+
+
+def concrete_waf_signals(
+    recorder_signals: tuple[str, ...],
+    *,
+    page_html: str | None = None,
+) -> tuple[str, ...]:
+    """Return only concrete WAF evidence; ignore unrelated page noise."""
+    found: list[str] = []
+    for signal in recorder_signals:
+        lowered = signal.lower()
+        if any(marker in lowered for marker in (*_WAF_URL_MARKERS, *_WAF_HEADER_MARKERS)):
+            found.append(signal)
+    if page_html:
+        lowered_html = page_html.lower()
+        for marker in _CONCRETE_WAF_HTML_MARKERS:
+            if marker in lowered_html:
+                found.append(f"html:{marker}")
+    return tuple(dict.fromkeys(found))
 
 
 class NetworkRecorder:
@@ -91,12 +125,20 @@ class NetworkRecorder:
         self._order = 0
         self._waf_signals: list[str] = []
         self._active_place_id: int | None = None
+        self._search_submitted_order = 0
 
     def begin_cycle(self, *, place_id: int | None = None) -> None:
         self._events.clear()
         self._order = 0
         self._waf_signals.clear()
         self._active_place_id = place_id
+        self._search_submitted_order = 0
+
+    def mark_search_submitted(self) -> None:
+        self._search_submitted_order = self._order
+
+    def _is_post_search(self, event: SanitizedNetworkEvent) -> bool:
+        return event.order > self._search_submitted_order
 
     @property
     def events(self) -> tuple[SanitizedNetworkEvent, ...]:
@@ -177,7 +219,7 @@ class NetworkRecorder:
                 self._waf_signals.append(f"url:{marker}")
         for key, value in headers.items():
             joined = f"{key}:{value}".lower()
-            for marker in _WAF_CONTENT_MARKERS:
+            for marker in _WAF_HEADER_MARKERS:
                 if marker in joined:
                     self._waf_signals.append(f"header:{marker}")
 
@@ -208,6 +250,61 @@ class NetworkRecorder:
                 if event.status is not None and event.status != 200:
                     return event
         return None
+
+    def saw_post_search_activity(self) -> bool:
+        return any(
+            self._is_post_search(event)
+            and (
+                (event.phase == "request" and path_is_post_search_candidate(event.path))
+                or (event.phase == "response" and path_is_post_search_candidate(event.path))
+            )
+            for event in self._events
+        )
+
+    def saw_post_search_candidate_request(self) -> bool:
+        return any(
+            event.phase == "request"
+            and path_is_post_search_candidate(event.path)
+            and self._is_post_search(event)
+            for event in self._events
+        )
+
+    def saw_post_search_candidate_response(self) -> bool:
+        return any(
+            event.phase == "response"
+            and path_is_post_search_candidate(event.path)
+            and self._is_post_search(event)
+            for event in self._events
+        )
+
+    def first_post_search_candidate_response(self) -> SanitizedNetworkEvent | None:
+        for event in self._events:
+            if (
+                event.phase == "response"
+                and path_is_post_search_candidate(event.path)
+                and self._is_post_search(event)
+            ):
+                return event
+        return None
+
+    def failed_post_search_response(self) -> SanitizedNetworkEvent | None:
+        for event in reversed(self._events):
+            if (
+                event.phase == "response"
+                and path_is_post_search_candidate(event.path)
+                and self._is_post_search(event)
+                and event.status is not None
+                and event.status not in (200, 201)
+            ):
+                return event
+        return None
+
+    def post_search_timeline_dicts(self) -> list[dict[str, Any]]:
+        return [
+            event.to_dict()
+            for event in self._events
+            if self._is_post_search(event) and path_is_post_search_candidate(event.path)
+        ][:20]
 
     def timeline_dicts(self) -> list[dict[str, Any]]:
         return [event.to_dict() for event in self._events]

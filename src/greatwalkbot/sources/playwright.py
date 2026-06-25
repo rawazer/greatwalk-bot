@@ -113,6 +113,7 @@ class PlaywrightAvailabilitySource:
                     track_slug=track.slug,
                     error=exc,
                     network_timeline=self._session.network.timeline_dicts(),
+                    form_state=self._session.last_form_state,
                 )
                 if attempt >= MAX_FETCH_ATTEMPTS_PER_TRACK:
                     break
@@ -169,8 +170,14 @@ class PlaywrightAvailabilitySource:
         )
         self._session.mark_selection_committed()
 
+        nights = (to_date - from_date).days
+        form_nights = track.fixed_nights if track.fixed_nights is not None else nights
+
         capture_started = time.monotonic()
         payload = self._session.capture_availability_after_search(
+            track=track,
+            start_date=from_date,
+            nights=form_nights,
             timeout_ms=self.capture_timeout_ms,
         )
         capture_done = time.monotonic()

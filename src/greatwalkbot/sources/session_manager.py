@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import json
 import logging
-import time
+from datetime import date
 from typing import Any
 
 from playwright.sync_api import Browser, Page, Playwright, Route, sync_playwright
 
 from greatwalkbot.constants import DEFAULT_USER_AGENT, GW_FACILITY_PATH
 from greatwalkbot.infra.errors import SessionError
+from greatwalkbot.models import Track
 from greatwalkbot.sources.availability_capture import (
     classify_capture_failure,
     wait_for_availability_response,
@@ -19,7 +20,7 @@ from greatwalkbot.sources.network_recorder import (
     NetworkRecorder,
     response_body_is_availability_payload,
 )
-from greatwalkbot.sources.spa_navigation import click_search_button
+from greatwalkbot.sources.search_form import submit_great_walk_search
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,8 @@ class SessionManager:
         self._captured_payload: dict | None = None
         self._network = NetworkRecorder()
         self._selection_committed = False
+        self._search_submitted = False
+        self._last_form_state: dict[str, Any] | None = None
 
     @property
     def page(self) -> Page:
@@ -47,6 +50,10 @@ class SessionManager:
     @property
     def network(self) -> NetworkRecorder:
         return self._network
+
+    @property
+    def last_form_state(self) -> dict[str, Any] | None:
+        return self._last_form_state
 
     def start(self) -> None:
         if self._browser is not None:
@@ -83,6 +90,8 @@ class SessionManager:
         self._current_request_body = None
         self._network = NetworkRecorder()
         self._selection_committed = False
+        self._search_submitted = False
+        self._last_form_state = None
 
     def is_healthy(self) -> bool:
         if self._browser is None or self._page is None:
@@ -97,11 +106,15 @@ class SessionManager:
         self._current_request_body = request_body
         self._captured_payload = None
         self._selection_committed = False
+        self._search_submitted = False
+        self._last_form_state = None
 
     def begin_capture_cycle(self, *, place_id: int) -> None:
         """Reset per-track capture state before selection/search actions."""
         self._captured_payload = None
         self._selection_committed = False
+        self._search_submitted = False
+        self._last_form_state = None
         self._network.begin_cycle(place_id=place_id)
 
     def mark_selection_committed(self) -> None:
@@ -110,13 +123,24 @@ class SessionManager:
     def captured_payload(self) -> dict | None:
         return self._captured_payload
 
-    def capture_availability_after_search(self, *, timeout_ms: int) -> dict:
-        """Wait for availability using expect_response registered before Search click."""
+    def capture_availability_after_search(
+        self,
+        *,
+        track: Track,
+        start_date: date,
+        nights: int,
+        timeout_ms: int,
+    ) -> dict:
+        """Prepare form, submit Search, and wait for post-search availability."""
         assert self._page is not None
         try:
             payload = wait_for_availability_response(
                 self._page,
-                click_search=lambda: click_search_button(self._page),
+                click_search=lambda: self._submit_search(
+                    track=track,
+                    start_date=start_date,
+                    nights=nights,
+                ),
                 timeout_ms=timeout_ms,
             )
             self._captured_payload = payload
@@ -127,19 +151,41 @@ class SessionManager:
                 page_html = self._page.content()
             except Exception:
                 pass
-            from greatwalkbot.infra.errors import AvailabilityRequestFailedError
+            from greatwalkbot.infra.errors import (
+                AvailabilityRequestFailedError,
+                SearchFormValidationError,
+            )
 
-            if isinstance(exc, AvailabilityRequestFailedError):
+            if isinstance(exc, (AvailabilityRequestFailedError, SearchFormValidationError)):
                 raise
             raise classify_capture_failure(
                 self._network,
                 selection_committed=self._selection_committed,
+                search_submitted=self._search_submitted,
                 place_id=self._current_request_body.get("placeId")
                 if self._current_request_body
                 else 0,
                 timeout_ms=timeout_ms,
                 page_html=page_html,
+                form_state=self._last_form_state,
             ) from exc
+
+    def _submit_search(
+        self,
+        *,
+        track: Track,
+        start_date: date,
+        nights: int,
+    ) -> None:
+        assert self._page is not None
+        self._last_form_state = submit_great_walk_search(
+            self._page,
+            self._network,
+            track,
+            start_date=start_date,
+            nights=nights,
+        )
+        self._search_submitted = True
 
     def _ensure_started(self) -> None:
         if not self.is_healthy():
