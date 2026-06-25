@@ -15,6 +15,7 @@ from greatwalkbot.sources.gw_desktop_date_picker import (
     build_choose_aria_label,
     build_unavailable_aria_label,
     click_date_picker_day,
+    click_target_day_in_picker,
     day_label_fingerprint,
     infer_month_from_day_labels,
     navigate_and_select_target_day,
@@ -22,6 +23,7 @@ from greatwalkbot.sources.gw_desktop_date_picker import (
     ordinal_day,
     parse_month_year_from_day_label,
     parse_month_year_header,
+    resolve_target_day_candidates,
     select_desktop_date_via_react_picker,
     wait_for_date_picker_open,
 )
@@ -79,21 +81,77 @@ class _PickerStatePage:
         self.has_prev = has_prev
         self.use_standard_react_nav = use_standard_react_nav
         self.visible_labels = list(visible_labels or [])
+        self.day_candidates: dict[str, list[dict]] = {}
         self.clicks: list[str] = []
         self._day_click_side_effect: object | None = None
         self._nav_clicks = 0
         self._nav_resolve_generation = 0
 
+    def set_day_candidates(self, label: str, candidates: list[dict]) -> None:
+        self.day_candidates[label] = candidates
+        if any(candidate.get("visible") and not candidate.get("outside_month") for candidate in candidates):
+            if label not in self.visible_labels:
+                self.visible_labels.append(label)
+
+    def _candidates_for_label(self, label: str) -> list[dict]:
+        if label in self.day_candidates:
+            return list(self.day_candidates[label])
+        if label in self.visible_labels:
+            return [
+                {
+                    "index": 0,
+                    "tag": "DIV",
+                    "role": "button",
+                    "class": "react-datepicker__day",
+                    "aria_label": label,
+                    "visible": True,
+                    "enabled": True,
+                    "outside_month": False,
+                    "clickable": True,
+                    "in_popup": True,
+                    "rect": {"x": 120, "y": 220, "width": 24, "height": 24},
+                }
+            ]
+        return []
+
+    def _target_day_probe(self, choose_label: str, unavailable_label: str) -> dict:
+        if not self.open_picker:
+            return {
+                "found": False,
+                "popup_found": False,
+                "choose_label": choose_label,
+                "unavailable_label": unavailable_label,
+                "choose_candidates": [],
+                "unavailable_candidates": [],
+            }
+        return {
+            "found": True,
+            "popup_found": True,
+            "choose_label": choose_label,
+            "unavailable_label": unavailable_label,
+            "choose_candidates": self._candidates_for_label(choose_label),
+            "unavailable_candidates": self._candidates_for_label(unavailable_label),
+        }
+
     def _popup_inner_locator(self, inner: str) -> MagicMock:
         inner_loc = MagicMock()
         inner_loc.first = inner_loc
-        if inner.startswith('[aria-label="') and inner.endswith('"]'):
-            label = inner[len('[aria-label="') : -2].replace('\\"', '"')
-            count = 1 if label in self.visible_labels else 0
-            inner_loc.count.return_value = count
+        outside_filter = ":not(.react-datepicker__day--outside-month)" in inner
+        if inner.startswith('[aria-label="') and '"]' in inner:
+            label_part = inner.split('[aria-label="', 1)[1]
+            label = label_part.split('"]', 1)[0].replace('\\"', '"')
+            candidates = self._candidates_for_label(label)
+            viable = [
+                candidate
+                for candidate in candidates
+                if candidate.get("visible")
+                and candidate.get("enabled", True)
+                and (not outside_filter or not candidate.get("outside_month"))
+            ]
+            inner_loc.count.return_value = len(viable)
 
-            def _click() -> None:
-                if label:
+            def _click(**_kwargs: object) -> None:
+                if label and viable:
                     self.clicks.append(label)
                 if self._day_click_side_effect is not None and callable(
                     self._day_click_side_effect
@@ -197,6 +255,8 @@ class _PickerStatePage:
         return candidates
 
     def evaluate(self, expression: str, arg=None) -> object:
+        if isinstance(arg, dict) and "chooseLabel" in arg:
+            return self._target_day_probe(arg["chooseLabel"], arg["unavailableLabel"])
         if "triggerSelector" in expression:
             if not self.open_picker:
                 return {"found": False, "popup_count": 0, "popups": [], "reason": "closed"}
@@ -253,7 +313,7 @@ class _PickerStatePage:
         loc.count.return_value = count
         loc.first = loc
 
-        def _click() -> None:
+        def _click(**_kwargs: object) -> None:
             if name:
                 self.clicks.append(name)
             if self._day_click_side_effect is not None and callable(self._day_click_side_effect):
@@ -581,3 +641,135 @@ def test_set_desktop_start_date_already_matched_does_not_open_picker():
         result = set_desktop_start_date(page, date(2026, 12, 7), binding)
     click.assert_not_called()
     assert result["action"] == "already_matched"
+
+
+def _candidate(
+    *,
+    index: int,
+    label: str,
+    visible: bool = True,
+    outside_month: bool = False,
+    enabled: bool = True,
+) -> dict:
+    return {
+        "index": index,
+        "tag": "DIV",
+        "role": "button",
+        "class": (
+            "react-datepicker__day custom-datepicker-day "
+            + ("react-datepicker__day--outside-month" if outside_month else "")
+        ).strip(),
+        "aria_label": label,
+        "aria_disabled": None,
+        "visible": visible,
+        "enabled": enabled,
+        "outside_month": outside_month,
+        "clickable": visible and enabled,
+        "rect": {"x": 120 + index * 10, "y": 220, "width": 24, "height": 24},
+        "in_popup": True,
+    }
+
+
+def test_resolve_target_day_prefers_visible_in_month_over_hidden_outside_month():
+    label = build_choose_aria_label(date(2026, 12, 3))
+    probe = {
+        "choose_label": label,
+        "unavailable_label": build_unavailable_aria_label(date(2026, 12, 3)),
+        "choose_candidates": [
+            _candidate(index=0, label=label, visible=False, outside_month=True),
+            _candidate(index=1, label=label, visible=True, outside_month=False),
+        ],
+        "unavailable_candidates": [],
+    }
+    resolution = resolve_target_day_candidates(probe)
+    assert resolution.status == "choose"
+    assert resolution.selected_candidate is not None
+    assert resolution.selected_candidate["index"] == 1
+
+
+def test_resolve_target_day_prefers_in_month_over_visible_outside_month():
+    label = build_choose_aria_label(date(2026, 12, 3))
+    probe = {
+        "choose_label": label,
+        "unavailable_label": build_unavailable_aria_label(date(2026, 12, 3)),
+        "choose_candidates": [
+            _candidate(index=0, label=label, visible=True, outside_month=True),
+            _candidate(index=1, label=label, visible=True, outside_month=False),
+        ],
+        "unavailable_candidates": [],
+    }
+    resolution = resolve_target_day_candidates(probe)
+    assert resolution.status == "choose"
+    assert resolution.selected_candidate is not None
+    assert resolution.selected_candidate["index"] == 1
+
+
+def test_only_outside_month_candidate_is_absent():
+    label = build_choose_aria_label(date(2026, 12, 3))
+    probe = {
+        "choose_label": label,
+        "unavailable_label": build_unavailable_aria_label(date(2026, 12, 3)),
+        "choose_candidates": [
+            _candidate(index=0, label=label, visible=True, outside_month=True),
+        ],
+        "unavailable_candidates": [],
+    }
+    resolution = resolve_target_day_candidates(probe)
+    assert resolution.status == "absent"
+    assert any("outside_month=True" in reason for reason in resolution.rejection_reasons)
+
+
+def test_only_outside_month_raises_typed_error_on_click():
+    label = build_choose_aria_label(date(2026, 12, 3))
+    page = _PickerStatePage(open_picker=True, month_text="December 2026", visible_labels=[])
+    page.set_day_candidates(
+        label,
+        [_candidate(index=0, label=label, visible=True, outside_month=True)],
+    )
+    with pytest.raises(GreatWalkDatePickerError, match="No viable date-picker day button") as exc_info:
+        click_target_day_in_picker(page, date(2026, 12, 3), date_iso="2026-12-03")
+    diag = exc_info.value.calendar_diagnostics
+    assert diag is not None
+    assert "target_day_selection" in diag
+    assert len(diag["target_day_selection"]["choose_candidates"]) == 1
+
+
+def test_duplicate_choose_candidates_clicks_visible_in_month():
+    label = build_choose_aria_label(date(2026, 12, 3))
+    page = _PickerStatePage(open_picker=True, month_text="December 2026", visible_labels=[])
+    page.set_day_candidates(
+        label,
+        [
+            _candidate(index=0, label=label, visible=False, outside_month=True),
+            _candidate(index=1, label=label, visible=True, outside_month=False),
+        ],
+    )
+    page.set_day_click_side_effect(lambda: setattr(page, "open_picker", False))
+    click_target_day_in_picker(page, date(2026, 12, 3), date_iso="2026-12-03")
+    assert label in page.clicks
+
+
+def test_not_available_candidate_raises_typed_unavailable_error():
+    label = build_unavailable_aria_label(date(2026, 12, 3))
+    page = _PickerStatePage(open_picker=True, month_text="December 2026", visible_labels=[])
+    page.set_day_candidates(label, [_candidate(index=0, label=label, visible=True)])
+    with pytest.raises(GreatWalkDateUnavailableError, match="Not available"):
+        click_target_day_in_picker(page, date(2026, 12, 3), date_iso="2026-12-03")
+
+
+def test_target_day_error_includes_bounded_candidate_diagnostics():
+    label = build_choose_aria_label(date(2026, 12, 3))
+    page = _PickerStatePage(open_picker=True, month_text="December 2026", visible_labels=[])
+    page.set_day_candidates(
+        label,
+        [_candidate(index=0, label=label, visible=True, outside_month=True)],
+    )
+    with pytest.raises(GreatWalkDatePickerError) as exc_info:
+        click_target_day_in_picker(page, date(2026, 12, 3), date_iso="2026-12-03")
+    diag = exc_info.value.calendar_diagnostics
+    assert diag is not None
+    selection = diag["target_day_selection"]
+    assert selection["choose_label"] == label
+    assert len(selection["choose_candidates"]) == 1
+    assert selection["choose_candidates"][0]["outside_month"] is True
+    assert selection["rejection_reasons"]

@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Literal, Protocol
 
@@ -14,6 +15,7 @@ from greatwalkbot.infra.errors import (
 )
 from greatwalkbot.sources.gw_active_form import normalize_date_string
 from greatwalkbot.sources.gw_desktop_date_picker_popup import (
+    DATE_TRIGGER_SELECTOR,
     DesktopDatePickerPopup,
     click_popup_navigation_control,
     discover_popup_navigation_raw,
@@ -35,6 +37,8 @@ MAX_MONTH_NAVIGATION_STEPS = 18
 DATE_PICKER_OPEN_TIMEOUT_MS = 5_000
 DATE_PICKER_CLOSE_TIMEOUT_MS = 5_000
 MAX_VISIBLE_DAY_LABELS = 15
+MAX_TARGET_DAY_CANDIDATES = 20
+TARGET_DAY_CLICK_TIMEOUT_MS = 5_000
 
 _DAY_LABEL_RE = re.compile(
     r"^(?:Choose|Not available)\s+\w+,\s+(\w+)\s+\d+(?:st|nd|rd|th),\s+(\d{4})$"
@@ -109,6 +113,126 @@ _COLLECT_CALENDAR_DIAGNOSTICS_JS = """
 }
 """
 
+_COLLECT_TARGET_DAY_CANDIDATES_JS = """
+({ triggerSelector, chooseLabel, unavailableLabel }) => {
+    const MAX = 20;
+    const mobile = document.getElementById('great-walk-start-date-mobile');
+    const trigger = document.querySelector(triggerSelector);
+
+    function visible(el) {
+        if (!el) return false;
+        const style = window.getComputedStyle(el);
+        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+        const rect = el.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+    }
+
+    function inMobile(el) {
+        return !!(mobile && mobile.contains(el)) || !!el.closest('[id*="-mobile"]');
+    }
+
+    function normalizeLabel(value) {
+        return (value || '').replace(/\\s+/g, ' ').trim();
+    }
+
+    function hasCalendarContent(el) {
+        return !!(
+            el.querySelector('.react-datepicker__day, .react-datepicker__month-container, [role="grid"], [role="gridcell"]')
+            || el.querySelector('button[aria-label^="Choose"], button[aria-label^="Not available"]')
+            || el.querySelector('[class*="day"]')
+        );
+    }
+
+    function resolvePopup() {
+        if (!trigger || trigger.id.includes('-mobile')) {
+            return null;
+        }
+        const roots = [
+            '.react-datepicker-popper',
+            '.react-datepicker',
+            '[class*="datepicker-popper"]',
+            '[class*="DatePicker"]',
+            '[role="dialog"]',
+        ];
+        const popups = [];
+        const seen = new Set();
+        for (const sel of roots) {
+            document.querySelectorAll(sel).forEach(el => {
+                if (!visible(el) || inMobile(el) || !hasCalendarContent(el)) return;
+                const rect = el.getBoundingClientRect();
+                const key = Math.round(rect.x) + ':' + Math.round(rect.y) + ':' + Math.round(rect.width);
+                if (seen.has(key)) return;
+                seen.add(key);
+                popups.push(el);
+            });
+        }
+        return popups.length === 1 ? popups[0] : null;
+    }
+
+    function describeCandidate(el, index) {
+        const rect = el.getBoundingClientRect();
+        const cls = (el.className || '').toString();
+        const style = window.getComputedStyle(el);
+        const pointerEvents = style.pointerEvents || null;
+        return {
+            index,
+            tag: el.tagName,
+            role: el.getAttribute('role'),
+            class: cls.slice(0, 120) || null,
+            aria_label: normalizeLabel(el.getAttribute('aria-label')).slice(0, 120) || null,
+            aria_disabled: el.getAttribute('aria-disabled'),
+            visible: visible(el),
+            enabled: !el.disabled && el.getAttribute('aria-disabled') !== 'true',
+            outside_month: cls.includes('react-datepicker__day--outside-month'),
+            pointer_events: pointerEvents,
+            clickable: visible(el)
+                && !el.disabled
+                && el.getAttribute('aria-disabled') !== 'true'
+                && pointerEvents !== 'none',
+            rect: {
+                x: Math.round(rect.x),
+                y: Math.round(rect.y),
+                width: Math.round(rect.width),
+                height: Math.round(rect.height),
+            },
+            in_popup: true,
+        };
+    }
+
+    function collectMatching(popup, label) {
+        const normalized = normalizeLabel(label);
+        const matches = [];
+        popup.querySelectorAll('[role="button"], .react-datepicker__day').forEach(el => {
+            if (normalizeLabel(el.getAttribute('aria-label')) !== normalized) return;
+            if (!popup.contains(el)) return;
+            matches.push(el);
+        });
+        return matches.slice(0, MAX).map((el, index) => describeCandidate(el, index));
+    }
+
+    const popup = resolvePopup();
+    if (!popup) {
+        return {
+            found: false,
+            popup_found: false,
+            choose_label: chooseLabel,
+            unavailable_label: unavailableLabel,
+            choose_candidates: [],
+            unavailable_candidates: [],
+        };
+    }
+
+    return {
+        found: true,
+        popup_found: true,
+        choose_label: chooseLabel,
+        unavailable_label: unavailableLabel,
+        choose_candidates: collectMatching(popup, chooseLabel),
+        unavailable_candidates: collectMatching(popup, unavailableLabel),
+    };
+}
+"""
+
 
 class DatePickerPage(Protocol):
     def locator(self, selector: str) -> Any: ...
@@ -121,6 +245,20 @@ class DatePickerPage(Protocol):
 
 
 TargetDayStatus = Literal["choose", "unavailable", "absent"]
+TargetDayResolveStatus = Literal["choose", "unavailable", "absent", "ambiguous"]
+
+
+@dataclass(frozen=True)
+class TargetDayResolution:
+    status: TargetDayResolveStatus
+    choose_label: str
+    unavailable_label: str
+    selected_candidate: dict[str, Any] | None
+    choose_candidates: list[dict[str, Any]]
+    unavailable_candidates: list[dict[str, Any]]
+    viable_choose_candidates: list[dict[str, Any]]
+    viable_unavailable_candidates: list[dict[str, Any]]
+    rejection_reasons: list[str]
 
 
 def ordinal_day(day: int) -> str:
@@ -196,14 +334,273 @@ def _day_button_locator(
     popup: DesktopDatePickerPopup | None = None,
 ) -> Any:
     if popup is not None:
-        escaped = aria_label.replace("\\", "\\\\").replace('"', '\\"')
-        scoped = popup.locator.locator(f'[aria-label="{escaped}"]')
-        if scoped.count() > 0:
-            return scoped.first
+        return _viable_day_button_locator(popup, aria_label)
     if hasattr(page, "get_by_role"):
         return page.get_by_role("button", name=aria_label, exact=True)
     escaped = aria_label.replace("\\", "\\\\").replace('"', '\\"')
     return page.locator(f'[role="button"][aria-label="{escaped}"]')
+
+
+def _viable_day_button_locator(popup: DesktopDatePickerPopup, aria_label: str) -> Any:
+    escaped = aria_label.replace("\\", "\\\\").replace('"', '\\"')
+    return popup.locator.locator(
+        f'[aria-label="{escaped}"]:not(.react-datepicker__day--outside-month)'
+    )
+
+
+def collect_target_day_candidates(
+    page: DatePickerPage,
+    target: date,
+    popup: DesktopDatePickerPopup | None = None,
+) -> dict[str, Any]:
+    choose_label = build_choose_aria_label(target)
+    unavailable_label = build_unavailable_aria_label(target)
+    raw = page.evaluate(
+        _COLLECT_TARGET_DAY_CANDIDATES_JS,
+        {
+            "triggerSelector": DATE_TRIGGER_SELECTOR,
+            "chooseLabel": choose_label,
+            "unavailableLabel": unavailable_label,
+        },
+    )
+    probe = raw if isinstance(raw, dict) else {"found": False, "choose_candidates": [], "unavailable_candidates": []}
+    probe.setdefault("choose_label", choose_label)
+    probe.setdefault("unavailable_label", unavailable_label)
+    if popup is not None:
+        probe["popup"] = (popup.descriptor.get("popup") or {}) if popup.descriptor else {}
+    return probe
+
+
+def _viable_choose_day_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        candidate
+        for candidate in candidates[:MAX_TARGET_DAY_CANDIDATES]
+        if candidate.get("visible")
+        and candidate.get("in_popup", True)
+        and candidate.get("enabled", True)
+        and not candidate.get("outside_month")
+        and candidate.get("clickable", True)
+    ]
+
+
+def _viable_unavailable_day_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        candidate
+        for candidate in candidates[:MAX_TARGET_DAY_CANDIDATES]
+        if candidate.get("visible")
+        and candidate.get("in_popup", True)
+        and candidate.get("enabled", True)
+        and not candidate.get("outside_month")
+    ]
+
+
+def resolve_target_day_candidates(probe: dict[str, Any]) -> TargetDayResolution:
+    choose_label = probe.get("choose_label") or ""
+    unavailable_label = probe.get("unavailable_label") or ""
+    choose_candidates = list(probe.get("choose_candidates") or [])[:MAX_TARGET_DAY_CANDIDATES]
+    unavailable_candidates = list(probe.get("unavailable_candidates") or [])[
+        :MAX_TARGET_DAY_CANDIDATES
+    ]
+    viable_choose = _viable_choose_day_candidates(choose_candidates)
+    viable_unavailable = _viable_unavailable_day_candidates(unavailable_candidates)
+    rejection_reasons: list[str] = []
+
+    if len(viable_choose) > 1:
+        rejection_reasons.append(f"ambiguous viable Choose candidates: {len(viable_choose)}")
+        for candidate in viable_choose:
+            rejection_reasons.append(
+                "ambiguous choose candidate "
+                f"index={candidate.get('index')} outside_month={candidate.get('outside_month')} "
+                f"visible={candidate.get('visible')}"
+            )
+        return TargetDayResolution(
+            status="ambiguous",
+            choose_label=choose_label,
+            unavailable_label=unavailable_label,
+            selected_candidate=None,
+            choose_candidates=choose_candidates,
+            unavailable_candidates=unavailable_candidates,
+            viable_choose_candidates=viable_choose,
+            viable_unavailable_candidates=viable_unavailable,
+            rejection_reasons=rejection_reasons,
+        )
+
+    if viable_choose:
+        return TargetDayResolution(
+            status="choose",
+            choose_label=choose_label,
+            unavailable_label=unavailable_label,
+            selected_candidate=viable_choose[0],
+            choose_candidates=choose_candidates,
+            unavailable_candidates=unavailable_candidates,
+            viable_choose_candidates=viable_choose,
+            viable_unavailable_candidates=viable_unavailable,
+            rejection_reasons=rejection_reasons,
+        )
+
+    if viable_unavailable:
+        return TargetDayResolution(
+            status="unavailable",
+            choose_label=choose_label,
+            unavailable_label=unavailable_label,
+            selected_candidate=viable_unavailable[0],
+            choose_candidates=choose_candidates,
+            unavailable_candidates=unavailable_candidates,
+            viable_choose_candidates=viable_choose,
+            viable_unavailable_candidates=viable_unavailable,
+            rejection_reasons=rejection_reasons,
+        )
+
+    for candidate in choose_candidates:
+        rejection_reasons.append(
+            "rejected choose candidate "
+            f"index={candidate.get('index')} visible={candidate.get('visible')} "
+            f"outside_month={candidate.get('outside_month')} enabled={candidate.get('enabled')}"
+        )
+    for candidate in unavailable_candidates:
+        rejection_reasons.append(
+            "rejected unavailable candidate "
+            f"index={candidate.get('index')} visible={candidate.get('visible')} "
+            f"outside_month={candidate.get('outside_month')}"
+        )
+    if not choose_candidates and not unavailable_candidates:
+        rejection_reasons.append("no matching Choose or Not available candidates in popup")
+
+    return TargetDayResolution(
+        status="absent",
+        choose_label=choose_label,
+        unavailable_label=unavailable_label,
+        selected_candidate=None,
+        choose_candidates=choose_candidates,
+        unavailable_candidates=unavailable_candidates,
+        viable_choose_candidates=viable_choose,
+        viable_unavailable_candidates=viable_unavailable,
+        rejection_reasons=rejection_reasons[:20],
+    )
+
+
+def _target_day_selection_diagnostics(
+    page: DatePickerPage,
+    target: date,
+    resolution: TargetDayResolution,
+    *,
+    navigation_steps: list[dict[str, Any]] | None = None,
+    probe: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    diag = collect_calendar_diagnostics(page, target, navigation_steps=navigation_steps)
+    diag["target_day_selection"] = {
+        "choose_label": resolution.choose_label,
+        "unavailable_label": resolution.unavailable_label,
+        "status": resolution.status,
+        "selected_candidate": resolution.selected_candidate,
+        "choose_candidates": resolution.choose_candidates,
+        "unavailable_candidates": resolution.unavailable_candidates,
+        "viable_choose_candidates": resolution.viable_choose_candidates,
+        "viable_unavailable_candidates": resolution.viable_unavailable_candidates,
+        "rejection_reasons": resolution.rejection_reasons[:20],
+        "popup_found": probe.get("popup_found") if probe else None,
+    }
+    return diag
+
+
+def click_target_day_in_picker(
+    page: DatePickerPage,
+    target: date,
+    *,
+    date_iso: str,
+    popup: DesktopDatePickerPopup | None = None,
+    navigation_steps: list[dict[str, Any]] | None = None,
+) -> str:
+    """Resolve and click exactly one viable in-month target day within the popup."""
+    popup = popup or resolve_visible_desktop_date_picker(page)
+    probe = collect_target_day_candidates(page, target, popup)
+    resolution = resolve_target_day_candidates(probe)
+
+    if resolution.status == "unavailable":
+        _raise_unavailable(
+            target,
+            date_iso=date_iso,
+            aria_label=resolution.unavailable_label,
+            page=page,
+            navigation_steps=navigation_steps or [],
+        )
+
+    if resolution.status == "ambiguous":
+        raise GreatWalkDatePickerError(
+            f"Ambiguous viable date-picker day buttons for aria-label: {resolution.choose_label}",
+            date_iso=date_iso,
+            calendar_diagnostics=_target_day_selection_diagnostics(
+                page,
+                target,
+                resolution,
+                navigation_steps=navigation_steps,
+                probe=probe,
+            ),
+        )
+
+    if resolution.status != "choose":
+        raise GreatWalkDatePickerError(
+            f"No viable date-picker day button found for aria-label: {resolution.choose_label}",
+            date_iso=date_iso,
+            calendar_diagnostics=_target_day_selection_diagnostics(
+                page,
+                target,
+                resolution,
+                navigation_steps=navigation_steps,
+                probe=probe,
+            ),
+        )
+
+    popup = resolve_visible_desktop_date_picker(page)
+    probe = collect_target_day_candidates(page, target, popup)
+    resolution = resolve_target_day_candidates(probe)
+    if resolution.status != "choose" or resolution.selected_candidate is None:
+        raise GreatWalkDatePickerError(
+            f"Could not re-resolve viable date-picker day for aria-label: {resolution.choose_label}",
+            date_iso=date_iso,
+            calendar_diagnostics=_target_day_selection_diagnostics(
+                page,
+                target,
+                resolution,
+                navigation_steps=navigation_steps,
+                probe=probe,
+            ),
+        )
+
+    option_locator = _viable_day_button_locator(popup, resolution.choose_label)
+    match_count = option_locator.count()
+    if match_count != 1:
+        raise GreatWalkDatePickerError(
+            f"Expected exactly one viable date-picker day for aria-label: {resolution.choose_label}",
+            date_iso=date_iso,
+            calendar_diagnostics=_target_day_selection_diagnostics(
+                page,
+                target,
+                resolution,
+                navigation_steps=navigation_steps,
+                probe=probe,
+            ),
+        )
+    try:
+        if hasattr(option_locator.first, "is_enabled") and not option_locator.first.is_enabled():
+            raise GreatWalkDatePickerError(
+                f"Date-picker day for {resolution.choose_label} is disabled",
+                date_iso=date_iso,
+                calendar_diagnostics=_target_day_selection_diagnostics(
+                    page,
+                    target,
+                    resolution,
+                    navigation_steps=navigation_steps,
+                    probe=probe,
+                ),
+            )
+    except GreatWalkDatePickerError:
+        raise
+    except Exception:
+        pass
+
+    option_locator.first.click(timeout=TARGET_DAY_CLICK_TIMEOUT_MS)
+    return resolution.choose_label
 
 
 def read_date_picker_state(page: DatePickerPage) -> dict[str, Any]:
@@ -331,13 +728,13 @@ def locate_target_day_in_picker(
         try:
             popup = resolve_visible_desktop_date_picker(page)
         except GreatWalkDatePickerError:
-            popup = None
-    unavailable_label = build_unavailable_aria_label(target)
-    if _day_button_locator(page, unavailable_label, popup).count() > 0:
-        return "unavailable", unavailable_label
-    choose_label = build_choose_aria_label(target)
-    if _day_button_locator(page, choose_label, popup).count() > 0:
-        return "choose", choose_label
+            return "absent", None
+    probe = collect_target_day_candidates(page, target, popup)
+    resolution = resolve_target_day_candidates(probe)
+    if resolution.status == "unavailable":
+        return "unavailable", resolution.unavailable_label
+    if resolution.status == "choose":
+        return "choose", resolution.choose_label
     return "absent", None
 
 
@@ -418,7 +815,13 @@ def navigate_and_select_target_day(
                 navigation_steps=navigation_steps,
             )
         if status == "choose" and label:
-            _day_button_locator(page, label, popup).first.click()
+            click_target_day_in_picker(
+                page,
+                target,
+                date_iso=date_iso,
+                popup=popup,
+                navigation_steps=navigation_steps,
+            )
             if attempt == 0:
                 navigation_steps.append({"action": "target_already_visible"})
             else:
@@ -631,17 +1034,30 @@ def click_date_picker_day(
         )
     choose_label = build_choose_aria_label(target)
     if status != "choose" or not label:
+        popup = None
+        try:
+            popup = resolve_visible_desktop_date_picker(page)
+        except GreatWalkDatePickerError:
+            pass
+        probe = collect_target_day_candidates(page, target, popup)
+        resolution = resolve_target_day_candidates(probe)
         raise GreatWalkDatePickerError(
             f"No date-picker day button found for aria-label: {choose_label}",
             date_iso=date_iso,
-            calendar_diagnostics=collect_calendar_diagnostics(
+            calendar_diagnostics=_target_day_selection_diagnostics(
                 page,
                 target,
+                resolution,
                 navigation_steps=navigation_steps,
+                probe=probe,
             ),
         )
-    _day_button_locator(page, label).first.click()
-    return choose_label
+    return click_target_day_in_picker(
+        page,
+        target,
+        date_iso=date_iso,
+        navigation_steps=navigation_steps,
+    )
 
 
 def wait_for_date_picker_closed(
