@@ -53,9 +53,10 @@ def test_fully_complete_milford_itinerary():
     snapshot = _load_snapshot(
         MILFORD, "milford_complete.json", date(2026, 12, 7), date(2026, 12, 9)
     )
-    matches = find_matching_itineraries(
+    result = find_matching_itineraries(
         snapshot, _milford_preference(), PARTY, TRAVEL_WINDOW
     )
+    matches = result.itineraries
     assert len(matches) == 1
     match = matches[0]
     assert match.complete_itinerary is True
@@ -68,9 +69,10 @@ def test_one_required_night_unavailable():
     snapshot = _load_snapshot(
         MILFORD, "milford_partial.json", date(2026, 12, 7), date(2026, 12, 9)
     )
-    matches = find_matching_itineraries(
+    result = find_matching_itineraries(
         snapshot, _milford_preference(), PARTY, TRAVEL_WINDOW
     )
+    matches = result.itineraries
     assert matches == ()
 
 
@@ -80,9 +82,10 @@ def test_insufficient_spaces_for_party_size():
     snapshot = parse_gw_facility_response(
         payload, MILFORD, date(2026, 12, 7), date(2026, 12, 9)
     )
-    matches = find_matching_itineraries(
+    result = find_matching_itineraries(
         snapshot, _milford_preference(), PARTY, TRAVEL_WINDOW
     )
+    matches = result.itineraries
     assert matches == ()
 
 
@@ -105,9 +108,10 @@ def test_routeburn_one_direction_valid_other_invalid():
     assert by_direction[ROUTEBURN_FORWARD].complete_itinerary is True
     assert by_direction[ROUTEBURN_REVERSE].complete_itinerary is False
 
-    matches = find_matching_itineraries(
+    result = find_matching_itineraries(
         snapshot, _routeburn_preference(), PARTY, TRAVEL_WINDOW
     )
+    matches = result.itineraries
     assert len(matches) == 1
     assert matches[0].direction == ROUTEBURN_FORWARD
 
@@ -127,9 +131,10 @@ def test_insufficient_source_data_produces_no_alert():
         ),
         facility_index=None,
     )
-    matches = find_matching_itineraries(
+    result = find_matching_itineraries(
         snapshot, _milford_preference(), PARTY, TRAVEL_WINDOW
     )
+    matches = result.itineraries
     assert matches == ()
 
 

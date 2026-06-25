@@ -104,12 +104,13 @@ class Watcher:
                 )
                 continue
 
-            matches = find_matching_itineraries(
+            matching = find_matching_itineraries(
                 snapshot,
                 track_preference,
                 trip.party,
                 trip.travel_window,
             )
+            matches = matching.itineraries
             if self.plan.trip_fit.enabled:
                 matches = tuple(
                     evaluate_trip_fit(itinerary, trip, self.plan.trip_fit)
@@ -126,6 +127,7 @@ class Watcher:
                 len(matches),
                 len(new_matches),
             )
+            logger.info(matching.evaluation.format_log_line())
 
             for itinerary in new_matches:
                 if (
@@ -161,6 +163,7 @@ class Watcher:
                     to_date=bounds.end,
                     matches=matches,
                     new_matches=new_matches,
+                    evaluation_summary=matching.evaluation.to_dict(),
                 )
             )
 

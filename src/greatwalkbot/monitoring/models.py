@@ -64,6 +64,7 @@ class TrackCheckResult:
     to_date: date
     matches: tuple[AvailableItinerary, ...]
     new_matches: tuple[AvailableItinerary, ...]
+    evaluation_summary: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)

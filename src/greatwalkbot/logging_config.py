@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
@@ -17,8 +18,12 @@ class _UtcFormatter(logging.Formatter):
         return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def configure_logging(log_dir: Path | None = None, *, level: int = logging.INFO) -> Path | None:
+def configure_logging(log_dir: Path | None = None, *, level: int | None = None) -> Path | None:
     """Configure console and optional file logging for greatwalkbot."""
+    if level is None:
+        level_name = os.environ.get("GREATWALKBOT_LOG_LEVEL", "INFO").upper()
+        level = getattr(logging, level_name, logging.INFO)
+
     root = logging.getLogger("greatwalkbot")
     root.setLevel(level)
     root.handlers.clear()

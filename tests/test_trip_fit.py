@@ -198,12 +198,13 @@ def test_matcher_includes_end_date_and_nights():
         preferred_start_dates=(date(2026, 12, 7),),
         complete_itinerary_only=True,
     )
-    matches = find_matching_itineraries(
+    result = find_matching_itineraries(
         snapshot,
         preference,
         Party(adults=2),
         TravelWindow(date(2026, 12, 1), date(2026, 12, 31)),
     )
+    matches = result.itineraries
     assert len(matches) == 1
     assert matches[0].itinerary_nights == 3
     assert matches[0].end_date == date(2026, 12, 10)

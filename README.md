@@ -32,6 +32,8 @@ uv run gwbot status
 
 Use `--headed` if AWS WAF blocks headless traffic. Use `gwbot watch config.yaml --once` for a single poll cycle.
 
+At INFO level, each track logs one evaluation summary after the checked line (candidate/complete/incomplete counts and grouped rejection reasons). Individual rejected start dates and directions are logged at DEBUG — set `GREATWALKBOT_LOG_LEVEL=DEBUG` to see them in the console and log file.
+
 ## Trip configuration
 
 The configuration describes a **complete trip** — who is travelling, when you are in New Zealand, and which Great Walks matter to you — rather than isolated polling rules per track.
@@ -57,7 +59,7 @@ Watch mode is designed for unattended long-running use:
 |---------|---------|
 | **Session manager** | Reuses a single Playwright browser across poll cycles; restarts on failure |
 | **Retry policy** | Exponential backoff with jitter for transient errors; fail-fast for config errors |
-| **Structured logging** | Console output plus rotating log file at `logs/greatwalkbot.log` |
+| **Structured logging** | Concise INFO summaries per track; set `GREATWALKBOT_LOG_LEVEL=DEBUG` for per-date rejection detail. Rotating log file at `logs/greatwalkbot.log` |
 | **Persistent dedupe** | SQLite store at `data/seen.db` survives restarts |
 | **Runtime metrics** | `logs/status.json`; inspect with `gwbot status` |
 | **Graceful shutdown** | Ctrl+C finishes the current poll, closes the browser, and flushes state |

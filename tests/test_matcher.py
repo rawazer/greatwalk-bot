@@ -38,9 +38,10 @@ def test_find_preferred_and_acceptable_matches_with_complete_fixture():
         payload, MILFORD, date(2026, 12, 7), date(2026, 12, 9)
     )
 
-    matches = find_matching_itineraries(
+    result = find_matching_itineraries(
         snapshot, TRACK_PREFERENCE, PARTY, TRAVEL_WINDOW
     )
+    matches = result.itineraries
     assert len(matches) == 1
     assert matches[0].preference == "preferred"
     assert matches[0].start_date == date(2026, 12, 7)
@@ -54,10 +55,10 @@ def test_party_size_filters_small_availability():
         payload, MILFORD, date(2026, 12, 7), date(2026, 12, 9)
     )
 
-    matches = find_matching_itineraries(
+    result = find_matching_itineraries(
         snapshot, TRACK_PREFERENCE, PARTY, TRAVEL_WINDOW
     )
-    assert matches == ()
+    assert result.itineraries == ()
 
 
 def test_preferred_start_dates():
@@ -77,7 +78,8 @@ def test_preferred_start_dates():
             ),
         )
     )
-    matches = find_matching_itineraries(snapshot, preference, PARTY, TRAVEL_WINDOW)
+    result = find_matching_itineraries(snapshot, preference, PARTY, TRAVEL_WINDOW)
+    matches = result.itineraries
     assert len(matches) == 1
     assert matches[0].preference == "preferred"
     assert matches[0].complete_itinerary is False

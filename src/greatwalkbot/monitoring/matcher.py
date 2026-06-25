@@ -8,6 +8,10 @@ from greatwalkbot.domain.dates import TravelWindow
 from greatwalkbot.domain.party import Party
 from greatwalkbot.domain.track import TrackPreference
 from greatwalkbot.models import AvailabilitySnapshot
+from greatwalkbot.monitoring.evaluation_summary import (
+    ItineraryEvaluationSummary,
+    MatchingResult,
+)
 from greatwalkbot.monitoring.itinerary_validation import (
     day_is_candidate,
     validate_complete_itineraries,
@@ -24,7 +28,7 @@ def find_matching_itineraries(
     preference: TrackPreference,
     party: Party,
     travel_window: TravelWindow,
-) -> tuple[AvailableItinerary, ...]:
+) -> MatchingResult:
     """Return bookable itineraries that satisfy the track and trip constraints."""
     if snapshot.track.slug != preference.slug:
         raise ValueError(
@@ -33,6 +37,7 @@ def find_matching_itineraries(
 
     requires_validation = preference.complete_itinerary_only
     matches: list[AvailableItinerary] = []
+    evaluation = ItineraryEvaluationSummary(track_slug=snapshot.track.slug)
 
     for day in snapshot.days:
         level = preference.preference_for(day.date, travel_window)
@@ -45,11 +50,12 @@ def find_matching_itineraries(
 
         if requires_validation:
             if snapshot.facility_index is None:
-                logger.info(
+                logger.debug(
                     "Skipped unverified itinerary for %s on %s: no facility index",
                     snapshot.track.slug,
                     day.date.isoformat(),
                 )
+                evaluation.record_incomplete(("no_facility_index",))
                 continue
 
             validations = validate_complete_itineraries(
@@ -61,14 +67,16 @@ def find_matching_itineraries(
             )
             for result in validations:
                 if not result.complete_itinerary:
-                    logger.info(
+                    logger.debug(
                         "Skipped incomplete itinerary for %s on %s%s: %s",
                         snapshot.track.slug,
                         day.date.isoformat(),
                         f" ({result.direction})" if result.direction else "",
                         ", ".join(result.failure_reasons) or "unknown",
                     )
+                    evaluation.record_incomplete(result.failure_reasons)
                     continue
+                evaluation.record_complete()
                 nights = get_itinerary_nights(snapshot.track.slug)
                 matches.append(
                     validation_to_itinerary(
@@ -86,6 +94,7 @@ def find_matching_itineraries(
 
         nights = get_itinerary_nights(snapshot.track.slug)
         start = day.date
+        evaluation.record_complete()
         matches.append(
             AvailableItinerary(
                 track_slug=snapshot.track.slug,
@@ -102,4 +111,4 @@ def find_matching_itineraries(
             )
         )
 
-    return tuple(matches)
+    return MatchingResult(itineraries=tuple(matches), evaluation=evaluation)
