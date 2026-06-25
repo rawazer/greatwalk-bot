@@ -7,6 +7,8 @@ import time
 from datetime import date
 
 from greatwalkbot.constants import GREATWALK_HASH
+from greatwalkbot.itinerary_form import itinerary_form_nights
+from greatwalkbot.track_itineraries import has_itinerary_definition
 from greatwalkbot.infra.errors import RetryableError, SessionError
 from greatwalkbot.models import AvailabilitySnapshot, Track
 from greatwalkbot.parsing import build_gw_facility_request, parse_gw_facility_response
@@ -170,8 +172,10 @@ class PlaywrightAvailabilitySource:
         )
         self._session.mark_selection_committed()
 
-        nights = (to_date - from_date).days
-        form_nights = track.fixed_nights if track.fixed_nights is not None else nights
+        if has_itinerary_definition(track.slug):
+            form_nights, _ = itinerary_form_nights(track.slug)
+        else:
+            form_nights = track.fixed_nights or (to_date - from_date).days
 
         capture_started = time.monotonic()
         payload = self._session.capture_availability_after_search(

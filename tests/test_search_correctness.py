@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from contextlib import contextmanager
 from datetime import date
 from unittest.mock import MagicMock, patch
@@ -24,55 +23,15 @@ from greatwalkbot.models import Track
 from greatwalkbot.sources.availability_capture import classify_capture_failure
 from greatwalkbot.sources.network_recorder import NetworkRecorder
 from greatwalkbot.sources.search_form import (
-    capture_search_form_state,
     prepare_search_form,
     submit_great_walk_search,
     wait_for_search_click_transition,
 )
 from greatwalkbot.sources.session_manager import SessionManager
+from test_form_controls import FakeFormPage
 
 KEPLER = Track("kepler", "Kepler Track", 872, 2, fixed_nights=3)
 ROUTEBURN = Track("routeburn", "Routeburn Track", 874, 7, fixed_nights=2)
-
-
-class FakeSearchPage:
-    def __init__(self) -> None:
-        self.evaluate_calls: list[tuple[str, object | None]] = []
-        self.wait_for_timeout_calls: list[int] = []
-        self._form_state = {
-            "selected_track_label": "Routeburn Track",
-            "start_date_value": "",
-            "nights_value": "",
-            "search_button_selector": "#great-walk-search-button",
-            "search_button_text": "Search",
-            "search_button_enabled": True,
-            "search_button_visible": True,
-            "validation_messages": [],
-            "loading_overlay_present": False,
-        }
-        self._after_set_state = dict(self._form_state)
-        self._after_set_state["start_date_value"] = "2026-12-03"
-        self._after_set_state["nights_value"] = "2"
-        self._set_calls = 0
-        self._results_visible = False
-
-    def evaluate(self, expression: str, arg: object | None = None) -> object:
-        self.evaluate_calls.append((expression, arg))
-        if "READ_FORM_STATE" in expression or "dropdown" in expression:
-            if self._set_calls:
-                return dict(self._after_set_state)
-            return dict(self._form_state)
-        if arg and isinstance(arg, dict) and "startDate" in arg:
-            self._set_calls += 1
-            return {"start_date_set": True, "nights_set": True}
-        if "RESULTS_VISIBLE" in expression or "great-walk-results" in expression:
-            return self._results_visible
-        if "search-button" in expression or "Search" in expression:
-            return True
-        return True
-
-    def wait_for_timeout(self, timeout: int) -> None:
-        self.wait_for_timeout_calls.append(timeout)
 
 
 def test_selection_metadata_without_search_is_not_waf():
@@ -99,24 +58,37 @@ def test_selection_metadata_without_search_is_not_waf():
 
 
 def test_disabled_search_button_raises_with_form_state():
-    page = FakeSearchPage()
-    page._form_state["search_button_enabled"] = False
+    page = FakeFormPage()
 
-    with pytest.raises(SearchFormValidationError, match="disabled") as exc_info:
-        prepare_search_form(
-            page,
-            ROUTEBURN,
-            start_date=date(2026, 12, 3),
-            nights=2,
-        )
+    def disabled_state(*_a, **_k):
+        state = page.evaluate("track_control")
+        state["search_button_enabled"] = False
+        return state
+
+    with patch(
+        "greatwalkbot.sources.search_form.capture_form_control_state",
+        side_effect=lambda *a, **k: {
+            "search_button_enabled": False,
+            "search_button_visible": True,
+            "validation_messages": [],
+            "track_control": {},
+            "start_date_control": {},
+            "nights_control": {},
+        },
+    ):
+        with pytest.raises(SearchFormValidationError, match="disabled") as exc_info:
+            prepare_search_form(
+                page,
+                ROUTEBURN,
+                start_date=date(2026, 12, 3),
+                nights=2,
+            )
 
     assert exc_info.value.form_state is not None
-    assert exc_info.value.form_state["search_button_enabled"] is False
 
 
 def test_form_values_verified_before_search():
-    page = FakeSearchPage()
-    page._after_set_state["start_date_value"] = "wrong"
+    page = FakeFormPage(start_date_value="2026-06-26", nights_value="20")
     with pytest.raises(SearchFormValidationError, match="not reflected"):
         prepare_search_form(
             page,
@@ -127,7 +99,7 @@ def test_form_values_verified_before_search():
 
 
 def test_click_verified_by_post_click_transition():
-    page = FakeSearchPage()
+    page = FakeFormPage()
     recorder = NetworkRecorder()
     recorder.begin_cycle(place_id=ROUTEBURN.place_id)
     recorder.mark_search_submitted()
@@ -211,6 +183,7 @@ def test_debug_cli_does_not_use_telegram_or_dedupe():
                     slug="routeburn",
                     acceptable_start_range=DateRange(date(2026, 12, 1), date(2026, 12, 31)),
                     preferred_start_range=DateRange(date(2026, 12, 6), date(2026, 12, 14)),
+                    complete_itinerary_only=True,
                 ),
             ),
         ),
@@ -227,26 +200,31 @@ def test_debug_cli_does_not_use_telegram_or_dedupe():
             with patch("greatwalkbot.debug_search.navigate_to_site"):
                 with patch("greatwalkbot.debug_search.wait_for_great_walk_ui"):
                     with patch(
-                        "greatwalkbot.sources.search_form.capture_search_form_state",
-                        return_value={"search_button_enabled": True},
+                        "greatwalkbot.debug_search.capture_selection_state",
+                        return_value={"visible_selection_committed": True},
                     ):
-                        with patch.object(
-                            session,
-                            "capture_availability_after_search",
-                            return_value={"GreatWalkFacilityData": []},
+                        with patch(
+                            "greatwalkbot.sources.search_form.capture_search_form_state",
+                            return_value={"nights_control": {"raw_value": "2"}},
                         ):
-                            report = run_debug_search(
-                                plan,
-                                ROUTEBURN,
-                                start_date=date(2026, 12, 3),
-                            )
+                            with patch.object(
+                                session,
+                                "capture_availability_after_search",
+                                return_value={"GreatWalkFacilityData": []},
+                            ):
+                                report = run_debug_search(
+                                    plan,
+                                    ROUTEBURN,
+                                    start_date=date(2026, 12, 3),
+                                )
 
     assert report.result == "success"
+    assert report.nights == 2
     session.close.assert_called_once()
 
 
 def test_submit_search_records_form_state():
-    page = FakeSearchPage()
+    page = FakeFormPage(start_date_value="2026-12-03", nights_value="2")
     recorder = NetworkRecorder()
     recorder.begin_cycle(place_id=ROUTEBURN.place_id)
 
@@ -259,7 +237,7 @@ def test_submit_search_records_form_state():
         transition_timeout_ms=50,
     )
 
-    assert outcome["start_date_value"] == "2026-12-03"
+    assert outcome["nights_control"]["raw_value"] == "2"
     recorder._append(
         phase="request",
         method="POST",

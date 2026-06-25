@@ -5,16 +5,17 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import date, timedelta
-from pathlib import Path
 from typing import Any
 
 from greatwalkbot.constants import GREATWALK_HASH
 from greatwalkbot.domain.plan import TripPlan
 from greatwalkbot.domain.track import TrackPreference
 from greatwalkbot.infra.errors import RetryableError
+from greatwalkbot.itinerary_form import resolve_form_nights
 from greatwalkbot.models import Track
 from greatwalkbot.parsing import build_gw_facility_request
 from greatwalkbot.sources.diagnostics import DiagnosticArtifacts, save_session_failure_diagnostics
+from greatwalkbot.sources.gw_form_controls import capture_selection_state
 from greatwalkbot.sources.session_manager import SessionManager
 from greatwalkbot.sources.spa_navigation import (
     commit_track_selection,
@@ -35,6 +36,8 @@ class DebugSearchReport:
     track_name: str
     start_date: date
     nights: int
+    itinerary_direction: str | None
+    selection_state: dict[str, Any] | None
     selection_committed: bool
     form_state_before_search: dict[str, Any] | None
     search_outcome: dict[str, Any] | None
@@ -49,16 +52,25 @@ class DebugSearchReport:
         lines = [
             f"Track: {self.track_name} ({self.track_slug})",
             f"Start date: {self.start_date.isoformat()}  Nights: {self.nights}",
-            f"Selection committed: {self.selection_committed}",
-            "",
-            "Form state before Search:",
-            json.dumps(self.form_state_before_search or {}, indent=2),
-            "",
-            "Search outcome:",
-            json.dumps(self.search_outcome or {}, indent=2),
-            "",
-            f"Result: {self.result}",
         ]
+        if self.itinerary_direction:
+            lines.append(f"Itinerary direction: {self.itinerary_direction}")
+        lines.extend(
+            [
+                f"Selection committed (automation): {self.selection_committed}",
+                "",
+                "Selection state:",
+                json.dumps(self.selection_state or {}, indent=2),
+                "",
+                "Form state before Search:",
+                json.dumps(self.form_state_before_search or {}, indent=2),
+                "",
+                "Search outcome:",
+                json.dumps(self.search_outcome or {}, indent=2),
+                "",
+                f"Result: {self.result}",
+            ]
+        )
         if self.error_type:
             lines.extend(
                 [
@@ -84,18 +96,12 @@ def _resolve_preference(plan: TripPlan, track_slug: str) -> TrackPreference:
     return preference
 
 
-def _search_nights(track: Track, preference: TrackPreference, plan: TripPlan) -> int:
-    if track.fixed_nights is not None:
-        return track.fixed_nights
-    bounds = preference.query_bounds(plan.trip.travel_window)
-    return max(1, (bounds.end - bounds.start).days)
-
-
 def run_debug_search(
     plan: TripPlan,
     track: Track,
     *,
     start_date: date,
+    nights_override: int | None = None,
     headed: bool = False,
     navigation_timeout_ms: int = DEFAULT_NAVIGATION_TIMEOUT_MS,
     app_ready_timeout_ms: int = DEFAULT_APP_READY_TIMEOUT_MS,
@@ -111,11 +117,21 @@ def run_debug_search(
             f"{bounds.start.isoformat()}..{bounds.end.isoformat()}"
         )
 
-    nights = _search_nights(track, preference, plan)
+    nights, direction = resolve_form_nights(
+        track.slug,
+        complete_itinerary_only=preference.complete_itinerary_only,
+        direction=preference.direction,
+        fixed_nights=track.fixed_nights,
+        fallback_nights=max(1, (bounds.end - bounds.start).days),
+    )
+    if nights_override is not None:
+        nights = nights_override
+
     to_date = start_date + timedelta(days=(bounds.end - bounds.start).days)
     request_body = build_gw_facility_request(track, start_date, to_date)
 
     session = SessionManager(headless=not headed)
+    selection_state: dict[str, Any] | None = None
     selection_committed = False
     form_state: dict[str, Any] | None = None
     search_outcome: dict[str, Any] | None = None
@@ -146,11 +162,26 @@ def run_debug_search(
             selection_commit_timeout_ms=selection_commit_timeout_ms,
         )
         session.mark_selection_committed()
-        selection_committed = True
+
+        selection_state = capture_selection_state(
+            page,
+            track,
+            backend_metadata_confirmed=recorder.saw_selection_metadata(track.place_id),
+        )
+        selection_committed = bool(
+            selection_state.get("backend_metadata_confirmed")
+            or selection_state.get("visible_selection_committed")
+        )
 
         from greatwalkbot.sources.search_form import capture_search_form_state
 
-        form_state = capture_search_form_state(page)
+        form_state = capture_search_form_state(
+            page,
+            track=track,
+            start_date=start_date,
+            nights=nights,
+        )
+        form_state = {**form_state, "selection": selection_state}
 
         session.capture_availability_after_search(
             track=track,
@@ -184,6 +215,8 @@ def run_debug_search(
         track_name=track.name,
         start_date=start_date,
         nights=nights,
+        itinerary_direction=direction,
+        selection_state=selection_state,
         selection_committed=selection_committed,
         form_state_before_search=form_state,
         search_outcome=search_outcome,

@@ -253,6 +253,7 @@ def _cmd_debug_search(args: argparse.Namespace) -> int:
             plan,
             track,
             start_date=args.date,
+            nights_override=args.nights,
             headed=args.headed,
         )
         print(report.to_text())
@@ -408,6 +409,12 @@ def main(argv: list[str] | None = None) -> int:
     debug_search.add_argument("config", type=Path, help="Path to watch configuration YAML")
     debug_search.add_argument("--track", required=True, help="Track slug (e.g. routeburn)")
     debug_search.add_argument("--date", type=_parse_date, required=True, help="Candidate start date")
+    debug_search.add_argument(
+        "--nights",
+        type=int,
+        default=None,
+        help="Override itinerary nights for the search form (default: registry duration)",
+    )
     debug_search.add_argument(
         "--headed",
         action="store_true",

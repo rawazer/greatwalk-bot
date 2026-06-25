@@ -190,6 +190,23 @@ See [itinerary-availability.md](itinerary-availability.md) for how GreatWalkBot 
 
 **Candidate paths** monitored in diagnostics (`network_timeline` in `summary.json`): `search/greatwalkplacefacility`, `search/getgreatwalksearchdata`, `search/getgreatwalkfacilityinformation`, `search/grid`, `fd/availability/getbyunit`. URLs are stored as path-only with numeric segments and query values redacted.
 
+### Great Walk search form controls (June 2026)
+
+GreatWalkBot binds these DOM controls on `#!greatwalk-result` (implementation: `src/greatwalkbot/sources/gw_form_controls.py`):
+
+| Control | Selector | Type | Semantic value | Notes |
+|---------|----------|------|----------------|-------|
+| Track | `#great-walk-dropdown-button` / `#great-walk-mobile-dropdown-button` | dropdown button | `visible_text` (label only) | Placeholder text is `Select Great Walk`; do **not** treat as committed when placeholder remains |
+| Start date | `#great-walk-start-date` | date button + hidden input | ISO `YYYY-MM-DD` from hidden `input` / `data-date` | Display text may be `DD/MM/YYYY`; never read `textContent` as the value |
+| Nights | `#great-walk-nights` | `<select>` | `select.value` | Never read `textContent` (concatenates all `<option>` labels) |
+| Search | `#great-walk-search-button` | button | enabled + visible | Fallback: visible button with text `Search` |
+
+**Setting values:** start date via calendar `[data-date="YYYY-MM-DD"]` click after opening the date button; nights via Playwright `select_option(value=…)` with `input`/`change`/`blur` events.
+
+**Form nights for complete itineraries** come from `track_itineraries.py` (Milford 3, Routeburn 2, Kepler 3), not from the configured date-range span.
+
+**Selection reporting:** `GET getgreatwalksearchdata` HTTP 200 is `backend_metadata_confirmed`. Visible dropdown label must match the track name for `visible_selection_committed`. If backend is confirmed but the label is still `Select Great Walk`, diagnostics report `ui_state_inconsistent: true`.
+
 #### `GET search/getgreatwalkfacilityinformation/facilityId/{facilityId}/startDate/{YYYY-MM-DD}`
 
 Facility metadata and restrictions for a start date.

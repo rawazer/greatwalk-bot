@@ -8,12 +8,12 @@ from greatwalkbot.models import Track
 TRACKS: tuple[Track, ...] = (
     Track("abel-tasman", "Abel Tasman Coast Track", 875, 0),
     Track("heaphy", "Heaphy Track", 876, 1),
-    Track("kepler", "Kepler Track", 872, 2),
+    Track("kepler", "Kepler Track", 872, 2, fixed_nights=3),
     Track("waikaremoana", "Lake Waikaremoana Track", 878, 3),
     Track("milford", "Milford Track", 873, 4, fixed_nights=3),
     Track("paparoa", "Paparoa Track", 880, 5),
     Track("rakiura", "Rakiura Track", 877, 6),
-    Track("routeburn", "Routeburn Track", 874, 7),
+    Track("routeburn", "Routeburn Track", 874, 7, fixed_nights=2),
     Track("tongariro", "Tongariro Northern Circuit", 879, 8),
     Track("whanganui", "Whanganui Journey", 881, 9),
 )
