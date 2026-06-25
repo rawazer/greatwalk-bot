@@ -1,0 +1,49 @@
+{
+  "GreatWalkFacilityHeaderData": [],
+  "GreatWalkFacilityData": [
+    {
+      "FacilityName": "Panekire Hut",
+      "GreatWalkFacilityDateData": [
+        {
+          "ArrivalDate": "2026-12-05T00:00:00",
+          "IsAvailable": true,
+          "IsSeasonAvailable": true,
+          "TotalAvailable": 8
+        }
+      ]
+    },
+    {
+      "FacilityName": "Waiopaoa Hut",
+      "GreatWalkFacilityDateData": [
+        {
+          "ArrivalDate": "2026-12-06T00:00:00",
+          "IsAvailable": true,
+          "IsSeasonAvailable": true,
+          "TotalAvailable": 16
+        }
+      ]
+    },
+    {
+      "FacilityName": "Marauiti Hut",
+      "GreatWalkFacilityDateData": [
+        {
+          "ArrivalDate": "2026-12-07T00:00:00",
+          "IsAvailable": true,
+          "IsSeasonAvailable": true,
+          "TotalAvailable": 13
+        }
+      ]
+    },
+    {
+      "FacilityName": "Waiharuru Hut",
+      "GreatWalkFacilityDateData": [
+        {
+          "ArrivalDate": "2026-12-05T00:00:00",
+          "IsAvailable": true,
+          "IsSeasonAvailable": true,
+          "TotalAvailable": 40
+        }
+      ]
+    }
+  ]
+}

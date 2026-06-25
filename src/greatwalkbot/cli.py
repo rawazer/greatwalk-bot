@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from datetime import date
 from pathlib import Path
@@ -34,6 +35,17 @@ logger = logging.getLogger(__name__)
 DEFAULT_LOG_DIR = Path("logs")
 DEFAULT_STATUS_FILE = DEFAULT_LOG_DIR / "status.json"
 DEFAULT_SEEN_DB = Path("data") / "seen.db"
+SEEN_DB_ENV_VAR = "GREATWALKBOT_SEEN_DB"
+
+
+def _resolve_seen_db_path(args: argparse.Namespace) -> Path:
+    seen_db = getattr(args, "seen_db", None)
+    if seen_db is not None:
+        return Path(seen_db)
+    env_path = os.environ.get(SEEN_DB_ENV_VAR)
+    if env_path:
+        return Path(env_path)
+    return DEFAULT_SEEN_DB
 
 
 def _parse_date(value: str) -> date:
@@ -100,7 +112,7 @@ def _cmd_watch(args: argparse.Namespace) -> int:
         )
         metrics.flush()
 
-        seen_store = SqliteSeenAvailabilityStore(DEFAULT_SEEN_DB)
+        seen_store = SqliteSeenAvailabilityStore(_resolve_seen_db_path(args))
 
         if source_name == "playwright":
             session_manager = SessionManager(headless=not args.headed)
@@ -370,6 +382,15 @@ def main(argv: list[str] | None = None) -> int:
         "--once",
         action="store_true",
         help="Run a single check cycle then exit",
+    )
+    watch.add_argument(
+        "--seen-db",
+        type=Path,
+        default=None,
+        help=(
+            "SQLite dedupe database path (default: data/seen.db or "
+            f"${SEEN_DB_ENV_VAR} when set)"
+        ),
     )
     watch.set_defaults(func=_cmd_watch)
 

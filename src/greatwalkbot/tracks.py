@@ -9,7 +9,7 @@ TRACKS: tuple[Track, ...] = (
     Track("abel-tasman", "Abel Tasman Coast Track", 875, 0),
     Track("heaphy", "Heaphy Track", 876, 1),
     Track("kepler", "Kepler Track", 872, 2, fixed_nights=3),
-    Track("waikaremoana", "Lake Waikaremoana Track", 878, 3),
+    Track("waikaremoana", "Lake Waikaremoana Track", 878, 3, fixed_nights=3),
     Track("milford", "Milford Track", 873, 4, fixed_nights=3),
     Track("paparoa", "Paparoa Track", 880, 5),
     Track("rakiura", "Rakiura Track", 877, 6),

@@ -13,6 +13,7 @@ ITINERARY_NIGHTS: dict[str, int] = {
     "milford": 3,
     "routeburn": 2,
     "kepler": 3,
+    "waikaremoana": 3,
 }
 
 

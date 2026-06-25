@@ -77,6 +77,10 @@ Metadata lives in `src/greatwalkbot/track_itineraries.py`. Facility names are ma
 | routeburn | `routeburn-shelter-to-divide` | 2 | Routeburn Falls Hut, Lake Mackenzie Hut |
 | routeburn | `routeburn-divide-to-shelter` | 2 | Lake Mackenzie Hut, Routeburn Falls Hut |
 | kepler | — | 3 | Luxmore Hut, Iris Burn Hut, Moturau Hut |
+| waikaremoana | `waikaremoana-onepoto-to-hopuruahine` | 3 | Panekire Hut, Waiopaoa Hut, Marauiti Hut |
+| waikaremoana | `waikaremoana-hopuruahine-to-onepoto` | 3 | Marauiti Hut, Waiopaoa Hut, Panekire Hut |
+
+**Lake Waikaremoana:** `direction: either` evaluates both walking directions separately (facility names from live `greatwalkplacefacility` responses, June 2026).
 
 **Routeburn:** `direction: either` in config evaluates **both** directions separately. Alerts include the validated direction slug — never a generic “either”.
 

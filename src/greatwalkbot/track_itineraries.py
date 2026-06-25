@@ -16,6 +16,8 @@ from greatwalkbot.domain.direction import DirectionPreference
 # Direction slugs used in validation output and confirmed bookings.
 ROUTEBURN_FORWARD = "routeburn-shelter-to-divide"
 ROUTEBURN_REVERSE = "routeburn-divide-to-shelter"
+WAIKAREMOANA_FORWARD = "waikaremoana-onepoto-to-hopuruahine"
+WAIKAREMOANA_REVERSE = "waikaremoana-hopuruahine-to-onepoto"
 
 
 @dataclass(frozen=True)
@@ -73,6 +75,26 @@ ITINERARY_DEFINITIONS: dict[tuple[str, str | None], ItineraryDefinition] = {
             RequiredNight(2, "Moturau Hut"),
         ),
     ),
+    ("waikaremoana", WAIKAREMOANA_FORWARD): ItineraryDefinition(
+        track_slug="waikaremoana",
+        direction=WAIKAREMOANA_FORWARD,
+        nights=3,
+        required_nights=(
+            RequiredNight(0, "Panekire Hut"),
+            RequiredNight(1, "Waiopaoa Hut"),
+            RequiredNight(2, "Marauiti Hut"),
+        ),
+    ),
+    ("waikaremoana", WAIKAREMOANA_REVERSE): ItineraryDefinition(
+        track_slug="waikaremoana",
+        direction=WAIKAREMOANA_REVERSE,
+        nights=3,
+        required_nights=(
+            RequiredNight(0, "Marauiti Hut"),
+            RequiredNight(1, "Waiopaoa Hut"),
+            RequiredNight(2, "Panekire Hut"),
+        ),
+    ),
 }
 
 
@@ -82,22 +104,36 @@ def definitions_for_track(
 ) -> tuple[ItineraryDefinition, ...]:
     """Return itinerary definitions to evaluate for a track and direction preference."""
     normalized = track_slug.strip().lower().replace("_", "-")
-    if normalized != "routeburn":
-        definition = ITINERARY_DEFINITIONS.get((normalized, None))
-        return (definition,) if definition is not None else ()
+    if normalized == "routeburn":
+        if direction == DirectionPreference.FORWARD:
+            keys = (ROUTEBURN_FORWARD,)
+        elif direction == DirectionPreference.REVERSE:
+            keys = (ROUTEBURN_REVERSE,)
+        else:
+            keys = (ROUTEBURN_FORWARD, ROUTEBURN_REVERSE)
 
-    if direction == DirectionPreference.FORWARD:
-        keys = (ROUTEBURN_FORWARD,)
-    elif direction == DirectionPreference.REVERSE:
-        keys = (ROUTEBURN_REVERSE,)
-    else:
-        keys = (ROUTEBURN_FORWARD, ROUTEBURN_REVERSE)
+        return tuple(
+            ITINERARY_DEFINITIONS[(normalized, key)]
+            for key in keys
+            if (normalized, key) in ITINERARY_DEFINITIONS
+        )
 
-    return tuple(
-        ITINERARY_DEFINITIONS[(normalized, key)]
-        for key in keys
-        if (normalized, key) in ITINERARY_DEFINITIONS
-    )
+    if normalized == "waikaremoana":
+        if direction == DirectionPreference.FORWARD:
+            keys = (WAIKAREMOANA_FORWARD,)
+        elif direction == DirectionPreference.REVERSE:
+            keys = (WAIKAREMOANA_REVERSE,)
+        else:
+            keys = (WAIKAREMOANA_FORWARD, WAIKAREMOANA_REVERSE)
+
+        return tuple(
+            ITINERARY_DEFINITIONS[(normalized, key)]
+            for key in keys
+            if (normalized, key) in ITINERARY_DEFINITIONS
+        )
+
+    definition = ITINERARY_DEFINITIONS.get((normalized, None))
+    return (definition,) if definition is not None else ()
 
 
 def has_itinerary_definition(track_slug: str) -> bool:

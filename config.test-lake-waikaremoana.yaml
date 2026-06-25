@@ -1,0 +1,70 @@
+# Temporary end-to-end Telegram alert test — Lake Waikaremoana Track
+#
+# Purpose: one-off validation that GreatWalkBot can detect a complete 3-night
+# itinerary and send a real Telegram alert. Does not replace config.yaml.
+#
+# Run once (isolated dedupe DB — does not suppress alerts already seen in
+# production data/seen.db):
+#
+#   export GREATWALKBOT_TELEGRAM_BOT_TOKEN="..."
+#   export GREATWALKBOT_TELEGRAM_CHAT_ID="..."
+#   uv run gwbot watch config.test-lake-waikaremoana.yaml --once \
+#     --seen-db data/seen-waikaremoana-test.db
+#
+# Expected INFO lines (availability permitting):
+#   Checked Lake Waikaremoana Track 2026-12-01..2026-12-31: N match(es), M new
+#   Evaluation summary: track=waikaremoana candidates=... complete=... incomplete=...
+#   Poll completed in ...s
+#
+# If N>0 and M>0, Telegram receives one alert for each new complete itinerary.
+# Use GREATWALKBOT_LOG_LEVEL=DEBUG to see per-date rejection detail.
+#
+# Restore normal monitoring afterward:
+#   uv run gwbot watch config.yaml
+#   (or restart the systemd user service if deployed)
+#
+# If DOC shows broad December availability, the first --once run may attempt
+# multiple Telegram alerts (one per new complete start date/direction). For a
+# single-alert plumbing check without polling DOC, use: gwbot notify-test ...
+#
+# Reset this test dedupe state only:
+#   rm data/seen-waikaremoana-test.db
+
+polling_interval: 300
+
+trip:
+  name: Lake Waikaremoana Telegram Test
+
+party:
+  adults: 2
+
+travel_window:
+  start: 2026-12-01
+  end: 2026-12-31
+
+tracks:
+  - track: waikaremoana
+    priority: 100
+    direction: either
+    complete_itinerary_only: true
+    preferred_start_range:
+      start: 2026-12-01
+      end: 2026-12-31
+    acceptable_start_range:
+      start: 2026-12-01
+      end: 2026-12-31
+
+retry:
+  max_attempts: 3
+  base_delay_seconds: 1.0
+  max_delay_seconds: 60.0
+
+trip_fit:
+  enabled: false
+
+notifications:
+  console: true
+  telegram:
+    enabled: true
+    bot_token_env: GREATWALKBOT_TELEGRAM_BOT_TOKEN
+    chat_id_env: GREATWALKBOT_TELEGRAM_CHAT_ID

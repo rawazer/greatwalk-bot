@@ -34,6 +34,18 @@ Use `--headed` if AWS WAF blocks headless traffic. Use `gwbot watch config.yaml 
 
 At INFO level, each track logs one evaluation summary after the checked line (candidate/complete/incomplete counts and grouped rejection reasons). Individual rejected start dates and directions are logged at DEBUG — set `GREATWALKBOT_LOG_LEVEL=DEBUG` to see them in the console and log file.
 
+### One-off Telegram alert test (Lake Waikaremoana)
+
+For a temporary end-to-end Telegram validation without touching the honeymoon `config.yaml`, use `config.test-lake-waikaremoana.yaml` with an isolated dedupe database:
+
+```bash
+export GREATWALKBOT_TELEGRAM_BOT_TOKEN="..."
+export GREATWALKBOT_TELEGRAM_CHAT_ID="..."
+uv run gwbot watch config.test-lake-waikaremoana.yaml --once --seen-db data/seen-waikaremoana-test.db
+```
+
+Restore normal monitoring with `uv run gwbot watch config.yaml` (or your systemd unit). See comments in the test config for expected output and dedupe reset.
+
 ## Trip configuration
 
 The configuration describes a **complete trip** — who is travelling, when you are in New Zealand, and which Great Walks matter to you — rather than isolated polling rules per track.
