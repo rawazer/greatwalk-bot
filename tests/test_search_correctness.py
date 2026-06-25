@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import date
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -199,32 +200,45 @@ def test_debug_cli_does_not_use_telegram_or_dedupe():
         session.is_healthy.return_value = True
         session.network.timeline_dicts.return_value = []
         session.network.post_search_timeline_dicts.return_value = []
+        session.network.saw_selection_metadata.return_value = True
+        session.capture_availability_after_search = MagicMock(return_value={"GreatWalkFacilityData": []})
         session_cls.return_value = session
         with patch("greatwalkbot.debug_search.commit_track_selection"):
             with patch("greatwalkbot.debug_search.navigate_to_site"):
                 with patch("greatwalkbot.debug_search.wait_for_great_walk_ui"):
                     with patch(
-                        "greatwalkbot.debug_search.wait_for_active_form_ready",
-                        return_value=(ACTIVE_RESOLUTION, _ready_state()),
+                        "greatwalkbot.debug_search.wait_for_selection_metadata",
+                        return_value=True,
                     ):
                         with patch(
-                            "greatwalkbot.debug_search.capture_selection_state",
-                            return_value={"visible_selection_committed": True},
+                            "greatwalkbot.debug_search.run_control_discovery_gate",
+                            return_value=({}, MagicMock(complete=True, missing=(), found={}, notes=(), form1_is_only_container=False), MagicMock(directory=Path("logs/diag"))),
                         ):
                             with patch(
-                                "greatwalkbot.sources.search_form.capture_search_form_state",
-                                return_value={"nights_control": {"raw_value": "2"}},
+                                "greatwalkbot.debug_search.resolve_active_great_walk_form",
+                                return_value=ACTIVE_RESOLUTION,
                             ):
-                                with patch.object(
-                                    session,
-                                    "capture_availability_after_search",
-                                    return_value={"GreatWalkFacilityData": []},
+                                with patch(
+                                    "greatwalkbot.debug_search.capture_selection_state",
+                                    return_value={"visible_selection_committed": True},
                                 ):
-                                    report = run_debug_search(
-                                        plan,
-                                        ROUTEBURN,
-                                        start_date=date(2026, 12, 3),
-                                    )
+                                    with patch(
+                                        "greatwalkbot.debug_search.inventory_active_form",
+                                        return_value=[],
+                                    ):
+                                        with patch(
+                                            "greatwalkbot.debug_search.capture_search_form_state",
+                                            return_value={"nights_control": {"raw_value": "2"}},
+                                        ):
+                                            with patch(
+                                                "greatwalkbot.debug_search.prepare_search_form",
+                                                return_value={"nights_control": {"raw_value": "2"}},
+                                            ):
+                                                report = run_debug_search(
+                                                    plan,
+                                                    ROUTEBURN,
+                                                    start_date=date(2026, 12, 3),
+                                                )
 
     assert report.result == "success"
     assert report.nights == 2

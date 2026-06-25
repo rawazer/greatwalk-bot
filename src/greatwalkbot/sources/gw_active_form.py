@@ -174,7 +174,15 @@ _RESOLVE_ACTIVE_ROOT_JS = """
                     roots.add(node);
                     break;
                 }
-                if (node.tagName === 'FORM' || (node.classList && node.classList.contains('tab-pane'))) {
+                if (node.tagName === 'FORM') {
+                    if (node.id === 'form1') {
+                        node = node.parentElement;
+                        continue;
+                    }
+                    roots.add(node);
+                    break;
+                }
+                if (node.classList && node.classList.contains('tab-pane')) {
                     roots.add(node);
                     break;
                 }
@@ -183,13 +191,15 @@ _RESOLVE_ACTIVE_ROOT_JS = """
         });
         document.querySelectorAll(
             '[id*="great-walk"][id*="form" i], [id*="great-walk"][id*="search" i], #great-walk-container'
-        ).forEach(el => roots.add(el));
+        ).forEach(el => {
+            if (el.id !== 'form1') roots.add(el);
+        });
         if (roots.size === 0) {
             const fallback = document.querySelector('[id^="great-walk-"]');
             if (fallback) {
                 let node = fallback;
                 for (let i = 0; i < 6 && node.parentElement; i++) node = node.parentElement;
-                roots.add(node);
+                if (node.id !== 'form1') roots.add(node);
             }
         }
         return Array.from(roots);

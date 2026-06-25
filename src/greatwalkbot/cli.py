@@ -25,6 +25,7 @@ from greatwalkbot.monitoring.trip_fit import check_trip_feasible_in_principle
 from greatwalkbot.plan_check import format_plan_check
 from greatwalkbot.bookings import format_bookings
 from greatwalkbot.debug_search import run_debug_search
+from greatwalkbot.inspect_greatwalk_dom import run_inspect_greatwalk_dom
 from greatwalkbot.preflight import format_preflight_report, run_preflight
 from greatwalkbot.tracks import resolve_track
 
@@ -263,6 +264,22 @@ def _cmd_debug_search(args: argparse.Namespace) -> int:
         return 1
 
 
+def _cmd_inspect_greatwalk_dom(args: argparse.Namespace) -> int:
+    try:
+        configure_logging(None)
+        track = resolve_track(args.track)
+        report = run_inspect_greatwalk_dom(
+            track,
+            headed=args.headed,
+            pause_seconds=args.pause_seconds,
+        )
+        print(report.to_text())
+        return 0
+    except (ValueError, RuntimeError) as exc:
+        logger.error("Error: %s", exc)
+        return 1
+
+
 def _cmd_preflight(args: argparse.Namespace) -> int:
     session_manager: SessionManager | None = None
 
@@ -422,6 +439,24 @@ def main(argv: list[str] | None = None) -> int:
     )
     debug_search.set_defaults(func=_cmd_debug_search)
 
+    inspect_dom = subparsers.add_parser(
+        "inspect-greatwalk-dom",
+        help="Read-only DOM inspection after track selection (no Search or availability)",
+    )
+    inspect_dom.add_argument("--track", required=True, help="Track slug (e.g. milford)")
+    inspect_dom.add_argument(
+        "--headed",
+        action="store_true",
+        help="Show browser window for manual DevTools inspection",
+    )
+    inspect_dom.add_argument(
+        "--pause-seconds",
+        type=int,
+        default=0,
+        help="Keep browser open for bounded manual inspection (max 300, default 0)",
+    )
+    inspect_dom.set_defaults(func=_cmd_inspect_greatwalk_dom)
+
     preflight = subparsers.add_parser(
         "preflight",
         help="Validate config, feasibility, notifications, and read-only DOC fetch",
@@ -453,6 +488,7 @@ def main(argv: list[str] | None = None) -> int:
         "bookings",
         "explain-availability",
         "debug-search",
+        "inspect-greatwalk-dom",
         "preflight",
     ):
         configure_logging(None)

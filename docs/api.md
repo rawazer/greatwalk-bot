@@ -192,20 +192,24 @@ See [itinerary-availability.md](itinerary-availability.md) for how GreatWalkBot 
 
 ### Great Walk search form controls (June 2026)
 
-GreatWalkBot discovers the **active** form root at runtime (`resolve_active_great_walk_form`) before any read/write. Duplicate mobile/desktop/hidden placeholders are scored and rejected; the winner is marked `[data-gwbot-active-root="1"]` and all locators are scoped beneath it.
+**Milestone 9.6 — evidence-driven discovery:** Do not assume a nested form root below ASP.NET `form1`. Use `gwbot inspect-greatwalk-dom --track <slug>` after track selection to capture a bounded `dom_report.json` under `logs/diagnostics/`. The report lists candidate elements (IDs, roles, semantic values, suggested locators, bounded ancestors) for track, date, nights, Search, and loading/validation indicators.
 
-| Control | Scoped selector (within active root) | Type | Semantic value |
-|---------|--------------------------------------|------|----------------|
-| Track | `#great-walk-dropdown-button` (visible) | dropdown button | `visible_text` label only |
-| Start date | `input#great-walk-start-date-input`, hidden date input, or `#great-walk-start-date` + calendar | input / date-button | ISO `YYYY-MM-DD` from `.value` or `data-date` |
-| Nights | `select#great-walk-nights` (visible, interactable) | `<select>` | `select.value` — never `textContent` |
-| Search | `#great-walk-search-button` | button | enabled + visible |
+`debug-search` gates on `run_control_discovery_gate`: if required controls are not identified from live DOM evidence, it raises `GreatWalkControlDiscoveryIncompleteError` with the diagnostic path and does **not** submit Search.
 
-**Loading vs validation:** Text such as `Fetching Content...` is treated as loading state (`GreatWalkFormNotReadyError`), not validation. Validation is read only from `[role="alert"]`, `.invalid-feedback`, `.field-validation-error`.
+Earlier active-root scoring (`resolve_active_great_walk_form`) remains informational only; `form1` is excluded as a Great Walk widget container unless it contains GW descendants.
 
-**Diagnostics:** `debug-search` reports active root resolution (candidate count, rejections, controls found) and a bounded `active_form_inventory` (≤40 nodes) for the active subtree only.
+| Control | Discovery terms / patterns | Semantic value |
+|---------|---------------------------|----------------|
+| Track | dropdown/combobox with great/walk/place | `visible_text` label |
+| Start date | input/hidden/button with date/start/arrival | ISO `YYYY-MM-DD` from `.value` or `data-date` |
+| Nights | visible `<select>` with night in id/name | `select.value` |
+| Search | button with Search text or great-walk search id | enabled + visible |
 
-**Selection reporting:** Backend metadata (`getgreatwalksearchdata` 200) and visible track label are read from the same active root in one attempt. `ui_state_inconsistent` is set when they disagree.
+**Loading vs validation:** Text such as `Fetching Content...` is loading state, not validation. Validation is read only from `[role="alert"]`, `.invalid-feedback`, `.field-validation-error`.
+
+**Diagnostics:** `inspect-greatwalk-dom` and failed `debug-search` write `dom_report.json` (≤80 candidates, ≤40 visible controls) plus `summary.json` and screenshot. Optional `--headed --pause-seconds N` (max 300) keeps the browser open for manual DevTools inspection.
+
+**Selection reporting:** Backend metadata (`getgreatwalksearchdata` 200) is recorded independently of DOM control discovery.
 
 #### `GET search/getgreatwalkfacilityinformation/facilityId/{facilityId}/startDate/{YYYY-MM-DD}`
 

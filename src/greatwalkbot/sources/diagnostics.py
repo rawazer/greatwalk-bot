@@ -62,6 +62,86 @@ def _collect_page_messages(page: Any) -> tuple[str, ...]:
     return tuple(messages)
 
 
+def save_dom_inspection_artifacts(
+    *,
+    page: Any | None,
+    track_name: str,
+    track_slug: str,
+    dom_report: dict[str, Any],
+    discovery_summary: dict[str, Any] | None = None,
+    diagnostics_dir: Path | None = None,
+    network_timeline: list[dict[str, Any]] | None = None,
+    prefix: str = "inspect",
+) -> DiagnosticArtifacts:
+    """Save bounded DOM inspection report and screenshot (no secrets or full HTML)."""
+    base_dir = diagnostics_dir or DEFAULT_DIAGNOSTICS_DIR
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    run_dir = base_dir / f"{timestamp}_{prefix}_{track_slug}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    summary: dict[str, Any] = {
+        "timestamp": timestamp,
+        "track_name": track_name,
+        "track_slug": track_slug,
+        "inspection_type": prefix,
+    }
+    if discovery_summary:
+        summary["discovery_summary"] = discovery_summary
+    if network_timeline:
+        summary["network_timeline"] = network_timeline[:40]
+
+    dom_report_path = run_dir / "dom_report.json"
+    bounded_report = {
+        "candidate_count": dom_report.get("candidate_count", 0),
+        "candidates": list(dom_report.get("candidates") or [])[:80],
+        "visible_controls": list(dom_report.get("visible_controls") or [])[:40],
+        "page_containers": dom_report.get("page_containers"),
+    }
+    dom_report_path.write_text(json.dumps(bounded_report, indent=2) + "\n", encoding="utf-8")
+    summary["dom_report_path"] = str(dom_report_path)
+
+    screenshot_path: Path | None = None
+    if page is not None:
+        try:
+            summary["url"] = str(page.url)[:500]
+        except Exception:
+            summary["url"] = None
+        try:
+            summary["title"] = str(page.title())[:500]
+        except Exception:
+            summary["title"] = None
+
+        messages = _collect_page_messages(page)
+        if messages:
+            summary["page_messages"] = list(messages)
+
+        try:
+            screenshot_path = run_dir / "screenshot.png"
+            page.screenshot(path=str(screenshot_path), full_page=False, timeout=5_000)
+        except Exception as exc:
+            summary["screenshot_error"] = str(exc)[:500]
+            screenshot_path = None
+
+    summary_path = run_dir / "summary.json"
+    summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+
+    enforce_retention(base_dir, diagnostics_retention_count())
+
+    artifacts = DiagnosticArtifacts(
+        directory=run_dir,
+        summary_path=summary_path,
+        screenshot_path=screenshot_path,
+    )
+    logger.info(
+        "Saved DOM inspection for %s under %s (dom_report=%s%s)",
+        track_slug,
+        run_dir,
+        dom_report_path,
+        f", screenshot={screenshot_path}" if screenshot_path else "",
+    )
+    return artifacts
+
+
 def save_session_failure_diagnostics(
     *,
     page: Any | None,

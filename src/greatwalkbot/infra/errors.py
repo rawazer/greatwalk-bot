@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 
 class RetryableError(Exception):
     """Transient failure that may succeed on retry."""
@@ -115,4 +117,21 @@ class GreatWalkControlNotFoundError(RetryableError):
         super().__init__(message)
         self.control = control
         self.form_state = form_state
+
+
+class GreatWalkControlDiscoveryIncompleteError(RetryableError):
+    """Live DOM inspection did not identify all required Great Walk controls."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        diagnostic_path: str | Path | None = None,
+        discovery_report: dict | None = None,
+        assessment: object | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.diagnostic_path = str(diagnostic_path) if diagnostic_path else None
+        self.discovery_report = discovery_report
+        self.assessment = assessment
 
