@@ -254,25 +254,29 @@ def test_inspect_cli_has_no_telegram_dedupe_or_search_side_effects():
                                 return_value={"track_options": [], "nights_options": [], "people_options": []},
                             ):
                                 with patch(
-                                    "greatwalkbot.inspect_greatwalk_dom.discover_great_walk_dom",
-                                    return_value={
-                                        "candidate_count": 4,
-                                        "candidates": _complete_candidates(),
-                                        "visible_controls": [],
-                                        "page_containers": {},
-                                    },
+                                    "greatwalkbot.inspect_greatwalk_dom.inspect_people_dropdown",
+                                    return_value={"people_dropdown": {"option_candidates": []}},
                                 ):
                                     with patch(
-                                        "greatwalkbot.inspect_greatwalk_dom.save_dom_inspection_artifacts"
-                                    ) as save_artifacts:
-                                        from greatwalkbot.sources.diagnostics import DiagnosticArtifacts
+                                        "greatwalkbot.inspect_greatwalk_dom.discover_great_walk_dom",
+                                        return_value={
+                                            "candidate_count": 4,
+                                            "candidates": _complete_candidates(),
+                                            "visible_controls": [],
+                                            "page_containers": {},
+                                        },
+                                    ):
+                                        with patch(
+                                            "greatwalkbot.inspect_greatwalk_dom.save_dom_inspection_artifacts"
+                                        ) as save_artifacts:
+                                            from greatwalkbot.sources.diagnostics import DiagnosticArtifacts
 
-                                        save_artifacts.return_value = DiagnosticArtifacts(
-                                            directory=Path("logs/diagnostics/test_milford"),
-                                            summary_path=Path("logs/diagnostics/test_milford/summary.json"),
-                                            screenshot_path=None,
-                                        )
-                                        report = run_inspect_greatwalk_dom(MILFORD)
+                                            save_artifacts.return_value = DiagnosticArtifacts(
+                                                directory=Path("logs/diagnostics/test_milford"),
+                                                summary_path=Path("logs/diagnostics/test_milford/summary.json"),
+                                                screenshot_path=None,
+                                            )
+                                            report = run_inspect_greatwalk_dom(MILFORD)
 
     session.prepare_fetch.assert_not_called()
     session.capture_availability_after_search.assert_not_called()

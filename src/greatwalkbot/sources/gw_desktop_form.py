@@ -15,6 +15,7 @@ from greatwalkbot.infra.errors import (
     GreatWalkDatePickerError,
     GreatWalkDateUnavailableError,
     GreatWalkDesktopRootError,
+    GreatWalkPeopleDropdownError,
     SearchFormValidationError,
 )
 from greatwalkbot.models import Track
@@ -754,17 +755,16 @@ def select_desktop_people(
     binding: DesktopRootBinding | None = None,
     *,
     root_change: dict[str, Any] | None = None,
-) -> None:
+) -> Any:
+    from greatwalkbot.sources.gw_desktop_people_dropdown import select_desktop_people as _select_desktop_people
+
     binding = binding or resolve_desktop_great_walk_root(page)
-    click_desktop_control(
+    return _select_desktop_people(
         page,
+        people_size,
         binding,
-        PEOPLE_BUTTON_SELECTOR,
-        "people",
         root_change=root_change,
     )
-    page.wait_for_timeout(200)
-    _click_dropdown_option(page, list_selector=PEOPLE_LIST_SELECTOR, match_number=people_size)
 
 
 def set_desktop_start_date(
@@ -1015,7 +1015,17 @@ def _ensure_desktop_people(
 ) -> ControlActionOutcome:
     if not _control_needs_change(state, "people_control"):
         return "already_matched"
-    select_desktop_people(page, people_size, binding, root_change=root_change)
+    try:
+        result = select_desktop_people(
+            page,
+            people_size,
+            binding,
+            root_change=root_change,
+        )
+    except GreatWalkPeopleDropdownError:
+        raise
+    if getattr(result, "action", None) == "changed_and_verified":
+        return "changed_and_verified"
     if _verify_control_changed(
         page,
         binding,
@@ -1119,13 +1129,17 @@ def prepare_desktop_search_form(
         people_size=people_size,
     )
 
-    control_actions["people"] = _ensure_desktop_people(
-        page,
-        binding,
-        people_size,
-        state,
-        root_change=root_change,
-    )
+    try:
+        control_actions["people"] = _ensure_desktop_people(
+            page,
+            binding,
+            people_size,
+            state,
+            root_change=root_change,
+        )
+    except GreatWalkPeopleDropdownError as exc:
+        state["people_dropdown_diagnostics"] = exc.people_dropdown_diagnostics
+        raise
 
     state = wait_for_desktop_form_values(
         page,
@@ -1157,9 +1171,11 @@ def prepare_desktop_search_form(
                 date_iso=start_date.isoformat(),
                 form_state=state,
             )
+        people_diag = state.get("people_dropdown_diagnostics")
         raise SearchFormValidationError(
             "Desktop form values not verified: " + ", ".join(failures),
             form_state=state,
+            people_dropdown_diagnostics=people_diag,
         )
 
     _raise_if_not_actionable(state, phase="after setting form values")

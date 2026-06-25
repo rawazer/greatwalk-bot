@@ -10,6 +10,7 @@ from typing import Any
 from greatwalkbot.models import Track
 from greatwalkbot.sources.diagnostics import DiagnosticArtifacts, save_dom_inspection_artifacts
 from greatwalkbot.sources.gw_desktop_date_picker_popup import inspect_date_picker_navigation
+from greatwalkbot.sources.gw_desktop_people_dropdown import inspect_people_dropdown
 from greatwalkbot.sources.gw_desktop_form import (
     discover_date_picker_elements,
     discover_desktop_dropdown_options,
@@ -62,6 +63,12 @@ class DomInspectionReport:
         date_elems = self.discovery_summary.get("date_picker_elements") or []
         if date_elems:
             lines.append(f"date_picker_elements: {len(date_elems)} visible node(s)")
+        people_dropdown = self.discovery_summary.get("people_dropdown") or {}
+        if people_dropdown:
+            lines.append(
+                "people_dropdown: "
+                f"{len(people_dropdown.get('option_candidates') or [])} option candidate(s)"
+            )
         missing = self.discovery_summary.get("missing_controls") or []
         if missing:
             lines.append(f"Missing controls: {', '.join(missing)}")
@@ -145,6 +152,7 @@ def run_inspect_greatwalk_dom(
         }
 
         dropdown_options = discover_desktop_dropdown_options(page)
+        people_dropdown_inspection = inspect_people_dropdown(page, binding)
         date_picker_elements: list[dict[str, Any]] = []
         if open_date_picker:
             open_desktop_date_picker(page)
@@ -157,6 +165,7 @@ def run_inspect_greatwalk_dom(
         dom_report = discover_great_walk_dom(page)
         dom_report["desktop_root"] = desktop_root
         dom_report["desktop_dropdown_options"] = dropdown_options
+        dom_report.update(people_dropdown_inspection)
         if date_picker_elements:
             dom_report["date_picker_elements"] = date_picker_elements
         if date_picker_inspection:
@@ -170,6 +179,7 @@ def run_inspect_greatwalk_dom(
         )
         summary["desktop_root"] = desktop_root
         summary["desktop_dropdown_options"] = dropdown_options
+        summary["people_dropdown"] = people_dropdown_inspection.get("people_dropdown")
         if date_picker_elements:
             summary["date_picker_elements"] = date_picker_elements
         if date_picker_inspection:

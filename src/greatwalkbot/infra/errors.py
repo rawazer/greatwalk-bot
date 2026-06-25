@@ -112,8 +112,30 @@ class WafChallengeSuspectedError(RetryableError):
 class SearchFormValidationError(RetryableError):
     """Great Walk search form is invalid or Search is not actionable."""
 
-    def __init__(self, message: str, *, form_state: dict | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        form_state: dict | None = None,
+        people_dropdown_diagnostics: dict | None = None,
+    ) -> None:
         super().__init__(message)
+        self.form_state = form_state
+        self.people_dropdown_diagnostics = people_dropdown_diagnostics
+
+
+class GreatWalkPeopleDropdownError(RetryableError):
+    """Desktop People dropdown could not be opened, resolved, or verified."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        people_dropdown_diagnostics: dict | None = None,
+        form_state: dict | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.people_dropdown_diagnostics = people_dropdown_diagnostics
         self.form_state = form_state
 
 

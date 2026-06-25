@@ -210,6 +210,8 @@ def save_session_failure_diagnostics(
         )
     if getattr(error, "shell_navigation_timed_out", False):
         summary["shell_navigation_timed_out"] = True
+    if getattr(error, "people_dropdown_diagnostics", None):
+        summary["people_dropdown_diagnostics"] = getattr(error, "people_dropdown_diagnostics")
 
     screenshot_path: Path | None = None
     if page is not None:
