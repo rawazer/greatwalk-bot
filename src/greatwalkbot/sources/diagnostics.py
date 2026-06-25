@@ -71,6 +71,7 @@ def save_session_failure_diagnostics(
     diagnostics_dir: Path | None = None,
     network_timeline: list[dict[str, Any]] | None = None,
     form_state: dict[str, Any] | None = None,
+    active_form_inventory: list[dict[str, Any]] | None = None,
 ) -> DiagnosticArtifacts | None:
     """Save screenshot and sanitized summary. Never stores cookies, tokens, or payloads."""
     base_dir = diagnostics_dir or DEFAULT_DIAGNOSTICS_DIR
@@ -93,6 +94,11 @@ def save_session_failure_diagnostics(
         summary["search_form_state"] = form_state
     elif hasattr(error, "form_state") and getattr(error, "form_state", None):
         summary["search_form_state"] = getattr(error, "form_state")
+
+    if active_form_inventory:
+        summary["active_form_inventory"] = active_form_inventory[:40]
+    elif isinstance(form_state, dict) and form_state.get("active_form_inventory"):
+        summary["active_form_inventory"] = form_state["active_form_inventory"][:40]
 
     screenshot_path: Path | None = None
     if page is not None:

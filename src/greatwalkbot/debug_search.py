@@ -15,7 +15,12 @@ from greatwalkbot.itinerary_form import resolve_form_nights
 from greatwalkbot.models import Track
 from greatwalkbot.parsing import build_gw_facility_request
 from greatwalkbot.sources.diagnostics import DiagnosticArtifacts, save_session_failure_diagnostics
-from greatwalkbot.sources.gw_form_controls import capture_selection_state
+from greatwalkbot.sources.gw_active_form import (
+    capture_selection_state,
+    inventory_active_form,
+    resolve_active_great_walk_form,
+    wait_for_active_form_ready,
+)
 from greatwalkbot.sources.session_manager import SessionManager
 from greatwalkbot.sources.spa_navigation import (
     commit_track_selection,
@@ -25,6 +30,7 @@ from greatwalkbot.sources.spa_navigation import (
 from greatwalkbot.sources.spa_timing import (
     DEFAULT_APP_READY_TIMEOUT_MS,
     DEFAULT_CAPTURE_TIMEOUT_MS,
+    DEFAULT_FORM_READY_TIMEOUT_MS,
     DEFAULT_NAVIGATION_TIMEOUT_MS,
     DEFAULT_SELECTION_COMMIT_TIMEOUT_MS,
 )
@@ -39,6 +45,8 @@ class DebugSearchReport:
     itinerary_direction: str | None
     selection_state: dict[str, Any] | None
     selection_committed: bool
+    active_form_resolution: dict[str, Any] | None
+    active_form_inventory: list[dict[str, Any]] | None
     form_state_before_search: dict[str, Any] | None
     search_outcome: dict[str, Any] | None
     network_timeline: list[dict[str, Any]]
@@ -59,8 +67,14 @@ class DebugSearchReport:
             [
                 f"Selection committed (automation): {self.selection_committed}",
                 "",
+                "Active form resolution:",
+                json.dumps(self.active_form_resolution or {}, indent=2),
+                "",
                 "Selection state:",
                 json.dumps(self.selection_state or {}, indent=2),
+                "",
+                "Active form inventory:",
+                json.dumps(self.active_form_inventory or [], indent=2),
                 "",
                 "Form state before Search:",
                 json.dumps(self.form_state_before_search or {}, indent=2),
@@ -106,6 +120,7 @@ def run_debug_search(
     navigation_timeout_ms: int = DEFAULT_NAVIGATION_TIMEOUT_MS,
     app_ready_timeout_ms: int = DEFAULT_APP_READY_TIMEOUT_MS,
     selection_commit_timeout_ms: int = DEFAULT_SELECTION_COMMIT_TIMEOUT_MS,
+    form_ready_timeout_ms: int = DEFAULT_FORM_READY_TIMEOUT_MS,
     capture_timeout_ms: int = DEFAULT_CAPTURE_TIMEOUT_MS,
 ) -> DebugSearchReport:
     """Run a single read-only search attempt with sanitized diagnostics."""
@@ -133,6 +148,8 @@ def run_debug_search(
     session = SessionManager(headless=not headed)
     selection_state: dict[str, Any] | None = None
     selection_committed = False
+    active_form_resolution: dict[str, Any] | None = None
+    active_form_inventory: list[dict[str, Any]] | None = None
     form_state: dict[str, Any] | None = None
     search_outcome: dict[str, Any] | None = None
     diagnostics: DiagnosticArtifacts | None = None
@@ -141,6 +158,7 @@ def run_debug_search(
     result = "success"
     network_timeline: list[dict[str, Any]] = []
     post_search_timeline: list[dict[str, Any]] = []
+    metadata_confirmed = False
 
     try:
         session.start()
@@ -162,11 +180,21 @@ def run_debug_search(
             selection_commit_timeout_ms=selection_commit_timeout_ms,
         )
         session.mark_selection_committed()
+        metadata_confirmed = recorder.saw_selection_metadata(track.place_id)
+
+        resolution, _ready = wait_for_active_form_ready(page, timeout_ms=form_ready_timeout_ms)
+        active_form_resolution = {
+            "candidate_count": resolution.candidate_count,
+            "active_root": resolution.active_root,
+            "rejected_candidates": resolution.rejected_candidates[:5],
+        }
+        active_form_inventory = inventory_active_form(page)
 
         selection_state = capture_selection_state(
             page,
             track,
-            backend_metadata_confirmed=recorder.saw_selection_metadata(track.place_id),
+            resolution,
+            backend_metadata_confirmed=metadata_confirmed,
         )
         selection_committed = bool(
             selection_state.get("backend_metadata_confirmed")
@@ -180,8 +208,13 @@ def run_debug_search(
             track=track,
             start_date=start_date,
             nights=nights,
+            resolution=resolution,
         )
-        form_state = {**form_state, "selection": selection_state}
+        form_state = {
+            **form_state,
+            "selection": selection_state,
+            "backend_metadata_confirmed": metadata_confirmed,
+        }
 
         session.capture_availability_after_search(
             track=track,
@@ -196,14 +229,20 @@ def run_debug_search(
         error_type = type(exc).__name__
         error_message = str(exc)
         search_outcome = session.last_form_state
-        form_state = form_state or session.last_form_state
+        form_state = form_state or getattr(exc, "form_state", None) or session.last_form_state
+        if metadata_confirmed and selection_state is not None:
+            selection_state = {
+                **selection_state,
+                "backend_metadata_confirmed": True,
+            }
         diagnostics = save_session_failure_diagnostics(
             page=session.page if session.is_healthy() else None,
             track_name=track.name,
             track_slug=track.slug,
             error=exc,
             network_timeline=session.network.timeline_dicts(),
-            form_state=session.last_form_state or form_state,
+            form_state=form_state,
+            active_form_inventory=active_form_inventory,
         )
     finally:
         network_timeline = session.network.timeline_dicts()
@@ -218,6 +257,8 @@ def run_debug_search(
         itinerary_direction=direction,
         selection_state=selection_state,
         selection_committed=selection_committed,
+        active_form_resolution=active_form_resolution,
+        active_form_inventory=active_form_inventory,
         form_state_before_search=form_state,
         search_outcome=search_outcome,
         network_timeline=network_timeline,

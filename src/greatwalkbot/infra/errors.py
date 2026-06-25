@@ -93,3 +93,26 @@ class AvailabilitySearchNotDispatchedError(RetryableError):
         self.form_state = form_state
         self.path = path
 
+
+class GreatWalkFormNotReadyError(RetryableError):
+    """Active Great Walk form did not finish loading within the bounded wait."""
+
+    def __init__(self, message: str, *, form_state: dict | None = None) -> None:
+        super().__init__(message)
+        self.form_state = form_state
+
+
+class GreatWalkControlNotFoundError(RetryableError):
+    """Required control was not found within the active Great Walk form root."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        control: str | None = None,
+        form_state: dict | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.control = control
+        self.form_state = form_state
+

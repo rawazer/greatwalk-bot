@@ -192,20 +192,20 @@ See [itinerary-availability.md](itinerary-availability.md) for how GreatWalkBot 
 
 ### Great Walk search form controls (June 2026)
 
-GreatWalkBot binds these DOM controls on `#!greatwalk-result` (implementation: `src/greatwalkbot/sources/gw_form_controls.py`):
+GreatWalkBot discovers the **active** form root at runtime (`resolve_active_great_walk_form`) before any read/write. Duplicate mobile/desktop/hidden placeholders are scored and rejected; the winner is marked `[data-gwbot-active-root="1"]` and all locators are scoped beneath it.
 
-| Control | Selector | Type | Semantic value | Notes |
-|---------|----------|------|----------------|-------|
-| Track | `#great-walk-dropdown-button` / `#great-walk-mobile-dropdown-button` | dropdown button | `visible_text` (label only) | Placeholder text is `Select Great Walk`; do **not** treat as committed when placeholder remains |
-| Start date | `#great-walk-start-date` | date button + hidden input | ISO `YYYY-MM-DD` from hidden `input` / `data-date` | Display text may be `DD/MM/YYYY`; never read `textContent` as the value |
-| Nights | `#great-walk-nights` | `<select>` | `select.value` | Never read `textContent` (concatenates all `<option>` labels) |
-| Search | `#great-walk-search-button` | button | enabled + visible | Fallback: visible button with text `Search` |
+| Control | Scoped selector (within active root) | Type | Semantic value |
+|---------|--------------------------------------|------|----------------|
+| Track | `#great-walk-dropdown-button` (visible) | dropdown button | `visible_text` label only |
+| Start date | `input#great-walk-start-date-input`, hidden date input, or `#great-walk-start-date` + calendar | input / date-button | ISO `YYYY-MM-DD` from `.value` or `data-date` |
+| Nights | `select#great-walk-nights` (visible, interactable) | `<select>` | `select.value` — never `textContent` |
+| Search | `#great-walk-search-button` | button | enabled + visible |
 
-**Setting values:** start date via calendar `[data-date="YYYY-MM-DD"]` click after opening the date button; nights via Playwright `select_option(value=…)` with `input`/`change`/`blur` events.
+**Loading vs validation:** Text such as `Fetching Content...` is treated as loading state (`GreatWalkFormNotReadyError`), not validation. Validation is read only from `[role="alert"]`, `.invalid-feedback`, `.field-validation-error`.
 
-**Form nights for complete itineraries** come from `track_itineraries.py` (Milford 3, Routeburn 2, Kepler 3), not from the configured date-range span.
+**Diagnostics:** `debug-search` reports active root resolution (candidate count, rejections, controls found) and a bounded `active_form_inventory` (≤40 nodes) for the active subtree only.
 
-**Selection reporting:** `GET getgreatwalksearchdata` HTTP 200 is `backend_metadata_confirmed`. Visible dropdown label must match the track name for `visible_selection_committed`. If backend is confirmed but the label is still `Select Great Walk`, diagnostics report `ui_state_inconsistent: true`.
+**Selection reporting:** Backend metadata (`getgreatwalksearchdata` 200) and visible track label are read from the same active root in one attempt. `ui_state_inconsistent` is set when they disagree.
 
 #### `GET search/getgreatwalkfacilityinformation/facilityId/{facilityId}/startDate/{YYYY-MM-DD}`
 

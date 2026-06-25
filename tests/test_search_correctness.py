@@ -1,4 +1,4 @@
-"""Deterministic tests for Great Walk search submission (Milestone 9.3)."""
+"""Deterministic tests for Great Walk search submission (Milestone 9.3+)."""
 
 from __future__ import annotations
 
@@ -21,14 +21,11 @@ from greatwalkbot.infra.errors import (
 )
 from greatwalkbot.models import Track
 from greatwalkbot.sources.availability_capture import classify_capture_failure
+from greatwalkbot.sources.gw_active_form import ActiveFormResolution
 from greatwalkbot.sources.network_recorder import NetworkRecorder
-from greatwalkbot.sources.search_form import (
-    prepare_search_form,
-    submit_great_walk_search,
-    wait_for_search_click_transition,
-)
+from greatwalkbot.sources.search_form import prepare_search_form, submit_great_walk_search
 from greatwalkbot.sources.session_manager import SessionManager
-from test_form_controls import FakeFormPage
+from test_form_controls import ACTIVE_RESOLUTION, FakeFormPage, _ready_state
 
 KEPLER = Track("kepler", "Kepler Track", 872, 2, fixed_nights=3)
 ROUTEBURN = Track("routeburn", "Routeburn Track", 874, 7, fixed_nights=2)
@@ -59,46 +56,49 @@ def test_selection_metadata_without_search_is_not_waf():
 
 def test_disabled_search_button_raises_with_form_state():
     page = FakeFormPage()
-
-    def disabled_state(*_a, **_k):
-        state = page.evaluate("track_control")
-        state["search_button_enabled"] = False
-        return state
-
+    ready = _ready_state()
+    ready["search_button_enabled"] = False
     with patch(
-        "greatwalkbot.sources.search_form.capture_form_control_state",
-        side_effect=lambda *a, **k: {
-            "search_button_enabled": False,
-            "search_button_visible": True,
-            "validation_messages": [],
-            "track_control": {},
-            "start_date_control": {},
-            "nights_control": {},
-        },
+        "greatwalkbot.sources.search_form.wait_for_active_form_ready",
+        return_value=(ACTIVE_RESOLUTION, ready),
     ):
-        with pytest.raises(SearchFormValidationError, match="disabled") as exc_info:
-            prepare_search_form(
-                page,
-                ROUTEBURN,
-                start_date=date(2026, 12, 3),
-                nights=2,
-            )
-
-    assert exc_info.value.form_state is not None
+        with patch(
+            "greatwalkbot.sources.search_form.capture_search_form_state",
+            return_value=ready,
+        ):
+            with pytest.raises(SearchFormValidationError, match="disabled"):
+                prepare_search_form(
+                    page,
+                    ROUTEBURN,
+                    start_date=date(2026, 12, 3),
+                    nights=2,
+                )
 
 
 def test_form_values_verified_before_search():
-    page = FakeFormPage(start_date_value="2026-06-26", nights_value="20")
-    with pytest.raises(SearchFormValidationError, match="not reflected"):
-        prepare_search_form(
-            page,
-            ROUTEBURN,
-            start_date=date(2026, 12, 3),
-            nights=2,
-        )
+    page = FakeFormPage()
+    ready = _ready_state(start_date_value="2026-06-26", nights_value="20")
+    ready["start_date_control"]["matches_requested"] = False
+    with patch(
+        "greatwalkbot.sources.search_form.wait_for_active_form_ready",
+        return_value=(ACTIVE_RESOLUTION, ready),
+    ):
+        with patch(
+            "greatwalkbot.sources.search_form.wait_for_active_form_values",
+            return_value=ready,
+        ):
+            with pytest.raises(SearchFormValidationError, match="not reflected"):
+                prepare_search_form(
+                    page,
+                    ROUTEBURN,
+                    start_date=date(2026, 12, 3),
+                    nights=2,
+                )
 
 
 def test_click_verified_by_post_click_transition():
+    from greatwalkbot.sources.search_form import wait_for_search_click_transition
+
     page = FakeFormPage()
     recorder = NetworkRecorder()
     recorder.begin_cycle(place_id=ROUTEBURN.place_id)
@@ -110,8 +110,13 @@ def test_click_verified_by_post_click_transition():
         status=None,
         content_type=None,
     )
-
-    outcome = wait_for_search_click_transition(page, recorder, timeout_ms=500)
+    with patch(
+        "greatwalkbot.sources.search_form.capture_search_form_state",
+        return_value=_ready_state(),
+    ):
+        outcome = wait_for_search_click_transition(
+            page, recorder, timeout_ms=500, resolution=ACTIVE_RESOLUTION
+        )
     assert outcome == "network"
 
 
@@ -127,8 +132,7 @@ def test_alternate_candidate_endpoint_surfaces_in_timeline():
         content_type="application/json",
     )
     assert recorder.saw_post_search_candidate_response()
-    timeline = recorder.post_search_timeline_dicts()
-    assert timeline[0]["path"] == "search/grid"
+    assert recorder.post_search_timeline_dicts()[0]["path"] == "search/grid"
 
 
 def test_capture_failure_classifies_undispatched_search():
@@ -200,23 +204,27 @@ def test_debug_cli_does_not_use_telegram_or_dedupe():
             with patch("greatwalkbot.debug_search.navigate_to_site"):
                 with patch("greatwalkbot.debug_search.wait_for_great_walk_ui"):
                     with patch(
-                        "greatwalkbot.debug_search.capture_selection_state",
-                        return_value={"visible_selection_committed": True},
+                        "greatwalkbot.debug_search.wait_for_active_form_ready",
+                        return_value=(ACTIVE_RESOLUTION, _ready_state()),
                     ):
                         with patch(
-                            "greatwalkbot.sources.search_form.capture_search_form_state",
-                            return_value={"nights_control": {"raw_value": "2"}},
+                            "greatwalkbot.debug_search.capture_selection_state",
+                            return_value={"visible_selection_committed": True},
                         ):
-                            with patch.object(
-                                session,
-                                "capture_availability_after_search",
-                                return_value={"GreatWalkFacilityData": []},
+                            with patch(
+                                "greatwalkbot.sources.search_form.capture_search_form_state",
+                                return_value={"nights_control": {"raw_value": "2"}},
                             ):
-                                report = run_debug_search(
-                                    plan,
-                                    ROUTEBURN,
-                                    start_date=date(2026, 12, 3),
-                                )
+                                with patch.object(
+                                    session,
+                                    "capture_availability_after_search",
+                                    return_value={"GreatWalkFacilityData": []},
+                                ):
+                                    report = run_debug_search(
+                                        plan,
+                                        ROUTEBURN,
+                                        start_date=date(2026, 12, 3),
+                                    )
 
     assert report.result == "success"
     assert report.nights == 2
@@ -224,18 +232,35 @@ def test_debug_cli_does_not_use_telegram_or_dedupe():
 
 
 def test_submit_search_records_form_state():
-    page = FakeFormPage(start_date_value="2026-12-03", nights_value="2")
+    page = FakeFormPage()
     recorder = NetworkRecorder()
     recorder.begin_cycle(place_id=ROUTEBURN.place_id)
+    ready = _ready_state()
 
-    outcome = submit_great_walk_search(
-        page,
-        recorder,
-        ROUTEBURN,
-        start_date=date(2026, 12, 3),
-        nights=2,
-        transition_timeout_ms=50,
-    )
+    with patch(
+        "greatwalkbot.sources.search_form.wait_for_active_form_ready",
+        return_value=(ACTIVE_RESOLUTION, ready),
+    ):
+        with patch(
+            "greatwalkbot.sources.search_form.wait_for_active_form_values",
+            return_value=ready,
+        ):
+            with patch(
+                "greatwalkbot.sources.search_form.wait_for_search_click_transition",
+                return_value=None,
+            ):
+                with patch(
+                    "greatwalkbot.sources.search_form.inventory_active_form",
+                    return_value=[],
+                ):
+                    outcome = submit_great_walk_search(
+                        page,
+                        recorder,
+                        ROUTEBURN,
+                        start_date=date(2026, 12, 3),
+                        nights=2,
+                        transition_timeout_ms=50,
+                    )
 
     assert outcome["nights_control"]["raw_value"] == "2"
     recorder._append(

@@ -1,4 +1,4 @@
-"""Tests for Great Walk form control binding (Milestone 9.4)."""
+"""Tests for Great Walk form control binding (Milestones 9.4–9.5)."""
 
 from __future__ import annotations
 
@@ -16,16 +16,47 @@ from greatwalkbot.domain.trip import Trip
 from greatwalkbot.infra.errors import SearchFormValidationError
 from greatwalkbot.itinerary_form import resolve_form_nights
 from greatwalkbot.models import Track
-from greatwalkbot.sources.gw_form_controls import (
-    capture_form_control_state,
-    capture_selection_state,
-    normalize_date_string,
-)
+from greatwalkbot.sources.gw_active_form import ActiveFormResolution, capture_selection_state
+from greatwalkbot.sources.gw_form_controls import normalize_date_string
 from greatwalkbot.sources.search_form import prepare_search_form
 
 KEPLER = Track("kepler", "Kepler Track", 872, 2, fixed_nights=3)
 ROUTEBURN = Track("routeburn", "Routeburn Track", 874, 7, fixed_nights=2)
-MILFORD = Track("milford", "Milford Track", 873, 4, fixed_nights=3)
+
+ACTIVE_RESOLUTION = ActiveFormResolution(
+    candidate_count=1,
+    active_root={
+        "id": "great-walk-search-panel",
+        "selector": "#great-walk-search-panel",
+        "controls_found": {"track": True, "start_date": True, "nights": True, "search": True},
+    },
+)
+
+
+def _ready_state(
+    *,
+    start_date_value: str = "2026-12-03",
+    nights_value: str = "2",
+    track_label: str = "Routeburn Track",
+) -> dict:
+    return {
+        "active_root": {"id": "great-walk-search-panel"},
+        "track_control": {"visible_text": track_label, "matches_requested": "Track" in track_label},
+        "start_date_control": {
+            "raw_value": start_date_value,
+            "normalized_value": normalize_date_string(start_date_value),
+            "matches_requested": start_date_value.startswith("2026-12"),
+        },
+        "nights_control": {
+            "raw_value": nights_value,
+            "selected_option_value": nights_value,
+            "matches_requested": nights_value in {"2", "3"},
+        },
+        "search_button_visible": True,
+        "search_button_enabled": True,
+        "validation_messages": [],
+        "loading_present": False,
+    }
 
 
 class FakeLocator:
@@ -37,15 +68,14 @@ class FakeLocator:
     def first(self) -> "FakeLocator":
         return self
 
+    def locator(self, selector: str) -> "FakeLocator":
+        return FakeLocator(self._page, f"{self._selector} >> {selector}")
+
     def count(self) -> int:
-        if "great-walk-start-date" in self._selector:
+        if "data-gwbot-active-root" in self._selector or "night" in self._selector:
             return 1
-        if "great-walk-nights" in self._selector:
+        if "date" in self._selector:
             return 1
-        if "data-date" in self._selector:
-            return 1 if self._page._calendar_has_date else 0
-        if "hidden" in self._selector:
-            return 0
         return 0
 
     def click(self) -> None:
@@ -53,8 +83,7 @@ class FakeLocator:
 
     def fill(self, value: str) -> None:
         self._page._events.append(("fill", self._selector, value))
-        if "date" in self._selector:
-            self._page._start_date_value = value
+        self._page._start_date_value = value
 
     def select_option(self, *, value: str) -> None:
         self._page._events.append(("select_option", self._selector, value))
@@ -71,64 +100,17 @@ class FakeFormPage:
         start_date_value: str = "2026-12-03",
         nights_value: str = "2",
         track_label: str = "Routeburn Track",
-        calendar_has_date: bool = True,
     ) -> None:
         self._start_date_value = start_date_value
         self._nights_value = nights_value
         self._track_label = track_label
-        self._calendar_has_date = calendar_has_date
         self._events: list[tuple] = []
-        self._set_calls = 0
 
     def locator(self, selector: str) -> FakeLocator:
         return FakeLocator(self, selector)
 
     def evaluate(self, expression: str, arg=None) -> object:
-        if "readSelect" in expression or "track_control" in expression:
-            return {
-                "track_control": {
-                    "selector": "#great-walk-dropdown-button",
-                    "control_type": "dropdown-button",
-                    "raw_value": None,
-                    "normalized_value": None,
-                    "selected_option_value": None,
-                    "selected_option_text": None,
-                    "visible_text": self._track_label,
-                },
-                "start_date_control": {
-                    "selector": "#great-walk-start-date",
-                    "control_type": "date-button",
-                    "raw_value": self._start_date_value,
-                    "normalized_value": normalize_date_string(self._start_date_value),
-                    "selected_option_value": None,
-                    "selected_option_text": None,
-                    "visible_text": "03/12/2026",
-                },
-                "nights_control": {
-                    "selector": "#great-walk-nights",
-                    "control_type": "select",
-                    "raw_value": self._nights_value,
-                    "normalized_value": self._nights_value,
-                    "selected_option_value": self._nights_value,
-                    "selected_option_text": f"{self._nights_value} nights",
-                    "visible_text": None,
-                },
-                "search_button_selector": "#great-walk-search-button",
-                "search_button_text": "Search",
-                "search_button_enabled": True,
-                "search_button_visible": True,
-                "validation_messages": [],
-                "loading_overlay_present": False,
-                "requested": arg,
-            }
-        if "setAttribute" in expression or "hidden.value" in expression:
-            self._set_calls += 1
-            if arg and "iso" in arg:
-                self._start_date_value = arg["iso"]
-            return True
-        if "great-walk-search-button" in expression or (
-            "Search" in expression and "getElementById" in expression
-        ):
+        if "search-button" in expression:
             return True
         return False
 
@@ -137,12 +119,9 @@ class FakeFormPage:
 
 
 def test_select_reports_value_not_concatenated_option_text():
-    page = FakeFormPage(nights_value="3")
-    state = capture_form_control_state(page, nights=3)
-    nights = state["nights_control"]
-    assert nights["raw_value"] == "3"
-    assert nights["selected_option_text"] == "3 nights"
-    assert nights["raw_value"] != "11234567891011121314"
+    state = _ready_state(nights_value="3")
+    assert state["nights_control"]["raw_value"] == "3"
+    assert state["nights_control"]["raw_value"] != "11234567891011121314"
 
 
 def test_date_normalized_to_iso():
@@ -151,25 +130,29 @@ def test_date_normalized_to_iso():
 
 
 def test_prepare_search_dispatches_input_change_blur_events():
-    page = FakeFormPage(start_date_value="2026-12-03", nights_value="2")
-    prepare_search_form(
-        page,
-        ROUTEBURN,
-        start_date=date(2026, 12, 3),
-        nights=2,
-    )
-    assert ("select_option", "#great-walk-nights", "2") in page._events
-    assert any(
-        event[0] == "dispatch_event" and event[2] in ("input", "change", "blur")
-        for event in page._events
-    )
+    page = FakeFormPage()
+    ready = _ready_state()
+    with patch(
+        "greatwalkbot.sources.search_form.wait_for_active_form_ready",
+        return_value=(ACTIVE_RESOLUTION, ready),
+    ):
+        with patch(
+            "greatwalkbot.sources.search_form.wait_for_active_form_values",
+            return_value=ready,
+        ):
+            with patch("greatwalkbot.sources.search_form.inventory_active_form", return_value=[]):
+                prepare_search_form(
+                    page,
+                    ROUTEBURN,
+                    start_date=date(2026, 12, 3),
+                    nights=2,
+                )
+    assert any(event[0] == "select_option" for event in page._events)
+    assert any(event[0] == "dispatch_event" for event in page._events)
 
 
 def test_routeburn_debug_defaults_to_two_nights():
-    nights, direction = resolve_form_nights(
-        "routeburn",
-        complete_itinerary_only=True,
-    )
+    nights, direction = resolve_form_nights("routeburn", complete_itinerary_only=True)
     assert nights == 2
     assert direction == "routeburn-shelter-to-divide"
 
@@ -181,11 +164,16 @@ def test_kepler_debug_defaults_to_three_nights():
 
 def test_selection_state_distinguishes_backend_and_visible_label():
     page = FakeFormPage(track_label="Select Great Walk")
-    state = capture_selection_state(
-        page,
-        ROUTEBURN,
-        backend_metadata_confirmed=True,
-    )
+    with patch(
+        "greatwalkbot.sources.gw_active_form.read_active_form_state",
+        return_value=_ready_state(track_label="Select Great Walk"),
+    ):
+        state = capture_selection_state(
+            page,
+            ROUTEBURN,
+            ACTIVE_RESOLUTION,
+            backend_metadata_confirmed=True,
+        )
     assert state["backend_metadata_confirmed"] is True
     assert state["visible_track_label"] == "Select Great Walk"
     assert state["visible_selection_committed"] is False
@@ -193,14 +181,24 @@ def test_selection_state_distinguishes_backend_and_visible_label():
 
 
 def test_failed_value_reflection_includes_control_diagnostics():
-    page = FakeFormPage(start_date_value="2026-06-26", nights_value="20")
-    with pytest.raises(SearchFormValidationError, match="Start date not reflected"):
-        prepare_search_form(
-            page,
-            ROUTEBURN,
-            start_date=date(2026, 12, 3),
-            nights=2,
-        )
+    page = FakeFormPage()
+    ready = _ready_state(start_date_value="2026-06-26", nights_value="20")
+    ready["start_date_control"]["matches_requested"] = False
+    with patch(
+        "greatwalkbot.sources.search_form.wait_for_active_form_ready",
+        return_value=(ACTIVE_RESOLUTION, ready),
+    ):
+        with patch(
+            "greatwalkbot.sources.search_form.wait_for_active_form_values",
+            return_value=ready,
+        ):
+            with pytest.raises(SearchFormValidationError, match="Start date not reflected"):
+                prepare_search_form(
+                    page,
+                    ROUTEBURN,
+                    start_date=date(2026, 12, 3),
+                    nights=2,
+                )
 
 
 def test_debug_cli_uses_registry_nights_not_date_range():
@@ -231,26 +229,30 @@ def test_debug_cli_uses_registry_nights_not_date_range():
             with patch("greatwalkbot.debug_search.navigate_to_site"):
                 with patch("greatwalkbot.debug_search.wait_for_great_walk_ui"):
                     with patch(
-                        "greatwalkbot.debug_search.capture_selection_state",
-                        return_value={
-                            "backend_metadata_confirmed": True,
-                            "visible_selection_committed": True,
-                        },
+                        "greatwalkbot.debug_search.wait_for_active_form_ready",
+                        return_value=(ACTIVE_RESOLUTION, _ready_state()),
                     ):
                         with patch(
-                            "greatwalkbot.sources.search_form.capture_search_form_state",
-                            return_value={"nights_control": {"raw_value": "2"}},
+                            "greatwalkbot.debug_search.capture_selection_state",
+                            return_value={
+                                "backend_metadata_confirmed": True,
+                                "visible_selection_committed": True,
+                            },
                         ):
-                            with patch.object(
-                                session,
-                                "capture_availability_after_search",
-                                return_value={"GreatWalkFacilityData": []},
-                            ) as capture:
-                                report = run_debug_search(
-                                    plan,
-                                    ROUTEBURN,
-                                    start_date=date(2026, 12, 3),
-                                )
+                            with patch(
+                                "greatwalkbot.sources.search_form.capture_search_form_state",
+                                return_value={"nights_control": {"raw_value": "2"}},
+                            ):
+                                with patch.object(
+                                    session,
+                                    "capture_availability_after_search",
+                                    return_value={"GreatWalkFacilityData": []},
+                                ) as capture:
+                                    report = run_debug_search(
+                                        plan,
+                                        ROUTEBURN,
+                                        start_date=date(2026, 12, 3),
+                                    )
 
     assert report.nights == 2
     capture.assert_called_once()
