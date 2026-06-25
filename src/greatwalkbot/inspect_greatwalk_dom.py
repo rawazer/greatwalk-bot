@@ -7,7 +7,6 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from greatwalkbot.constants import GREATWALK_HASH
 from greatwalkbot.models import Track
 from greatwalkbot.sources.diagnostics import DiagnosticArtifacts, save_dom_inspection_artifacts
 from greatwalkbot.sources.gw_desktop_date_picker_popup import inspect_date_picker_navigation
@@ -23,11 +22,7 @@ from greatwalkbot.sources.gw_dom_discovery import (
     discover_great_walk_dom,
 )
 from greatwalkbot.sources.session_manager import SessionManager
-from greatwalkbot.sources.spa_navigation import (
-    commit_track_selection,
-    navigate_to_site,
-    wait_for_great_walk_ui,
-)
+from greatwalkbot.sources.spa_navigation import bootstrap_great_walk_ui, commit_track_selection
 from greatwalkbot.sources.spa_timing import (
     DEFAULT_APP_READY_TIMEOUT_MS,
     DEFAULT_NAVIGATION_TIMEOUT_MS,
@@ -112,13 +107,19 @@ def run_inspect_greatwalk_dom(
     metadata_confirmed = False
 
     try:
+        browser_started = time.monotonic()
         session.start()
+        browser_start_seconds = time.monotonic() - browser_started
         page = session.page
         recorder = session.network
 
-        navigate_to_site(page, timeout_ms=navigation_timeout_ms)
-        page.evaluate(f"window.location.hash = '{GREATWALK_HASH}'")
-        wait_for_great_walk_ui(page, timeout_ms=app_ready_timeout_ms)
+        bootstrap_great_walk_ui(
+            page,
+            shell_timeout_ms=navigation_timeout_ms,
+            spa_ready_timeout_ms=app_ready_timeout_ms,
+            recorder=recorder,
+            browser_start_seconds=browser_start_seconds,
+        )
 
         recorder.begin_cycle(place_id=track.place_id)
         commit_track_selection(

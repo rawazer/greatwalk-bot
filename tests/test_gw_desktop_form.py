@@ -240,8 +240,7 @@ def test_inspect_open_date_picker_includes_bounded_elements():
         session_cls.return_value = session
         page = DesktopPage()
         session.page = page
-        with patch("greatwalkbot.inspect_greatwalk_dom.navigate_to_site"):
-            with patch("greatwalkbot.inspect_greatwalk_dom.wait_for_great_walk_ui"):
+        with patch("greatwalkbot.inspect_greatwalk_dom.bootstrap_great_walk_ui"):
                 with patch("greatwalkbot.inspect_greatwalk_dom.commit_track_selection"):
                     with patch(
                         "greatwalkbot.inspect_greatwalk_dom.wait_for_selection_metadata",
@@ -336,8 +335,7 @@ def test_debug_search_uses_desktop_prepare_and_people_size():
         session.capture_availability_after_search = MagicMock(return_value={})
         session_cls.return_value = session
         with patch("greatwalkbot.debug_search.commit_track_selection"):
-            with patch("greatwalkbot.debug_search.navigate_to_site"):
-                with patch("greatwalkbot.debug_search.wait_for_great_walk_ui"):
+            with patch("greatwalkbot.debug_search.bootstrap_great_walk_ui"):
                     with patch(
                         "greatwalkbot.debug_search.wait_for_selection_metadata",
                         return_value=True,

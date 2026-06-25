@@ -25,12 +25,15 @@ from greatwalkbot.sources.network_recorder import NetworkRecorder
 from greatwalkbot.sources.playwright import PlaywrightAvailabilitySource
 from greatwalkbot.sources.session_manager import SessionManager
 from greatwalkbot.sources.spa_navigation import (
+    bootstrap_great_walk_ui,
+    collect_navigation_state,
     commit_track_selection,
     navigate_to_site,
     open_great_walk_view,
     wait_for_great_walk_ui,
 )
 from greatwalkbot.sources.spa_timing import (
+    DEFAULT_SHELL_NAVIGATION_TIMEOUT_MS,
     GOTO_WAIT_UNTIL,
     MAX_FETCH_ATTEMPTS_PER_TRACK,
 )
@@ -39,14 +42,30 @@ MILFORD = Track("milford", "Milford Track", 873, 4, fixed_nights=3)
 
 
 class FakeSpaPage:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        goto_raises: bool = False,
+        on_doc_host: bool = True,
+        spa_ready: bool = True,
+        ready_state: str = "interactive",
+    ) -> None:
         self.goto_calls: list[dict] = []
         self.evaluate_calls: list[tuple[str, object | None]] = []
         self.wait_for_function_calls: list[int] = []
         self.wait_for_timeout_calls: list[int] = []
         self._click_option_results: list[str | None] = []
         self._selection_committed = False
-        self.url = "https://bookings.doc.govt.nz/Web/Default.aspx"
+        self.url = (
+            "https://bookings.doc.govt.nz/Web/Default.aspx"
+            if on_doc_host
+            else "https://example.com/timeout"
+        )
+        self._goto_raises = goto_raises
+        self._spa_ready = spa_ready
+        self._ready_state = ready_state
+        self._visible_roots = 1 if spa_ready else 0
+        self._visible_dropdowns = 1 if spa_ready else 0
         self._gwbot_console_messages: list[str] = []
         self._gwbot_page_errors: list[str] = []
 
@@ -54,9 +73,17 @@ class FakeSpaPage:
         self.goto_calls.append(
             {"url": url, "wait_until": wait_until, "timeout": timeout}
         )
+        if self._goto_raises:
+            raise TimeoutError(f"Timeout {timeout}ms exceeded.")
 
     def evaluate(self, expression: str, arg: object | None = None) -> object:
         self.evaluate_calls.append((expression, arg))
+        if "ready_state" in expression:
+            return {
+                "ready_state": self._ready_state,
+                "visible_desktop_search_root_count": self._visible_roots,
+                "visible_great_walk_dropdown_count": self._visible_dropdowns,
+            }
         if isinstance(arg, dict) and "trackName" in arg:
             return self._selection_committed
         if isinstance(arg, dict) and "optionId" in arg:
@@ -73,6 +100,8 @@ class FakeSpaPage:
 
     def wait_for_function(self, expression: str, *, timeout: int) -> bool:
         self.wait_for_function_calls.append(timeout)
+        if not self._spa_ready:
+            raise TimeoutError("Great Walk UI not ready")
         return True
 
     def wait_for_timeout(self, timeout: int) -> None:
@@ -92,7 +121,103 @@ def test_navigation_does_not_use_networkidle():
     page = FakeSpaPage()
     navigate_to_site(page, timeout_ms=5_000)
     assert page.goto_calls[0]["wait_until"] == GOTO_WAIT_UNTIL
+    assert page.goto_calls[0]["wait_until"] == "commit"
     assert page.goto_calls[0]["wait_until"] != "networkidle"
+
+
+def test_bootstrap_goto_succeeds_and_spa_readiness_succeeds():
+    page = FakeSpaPage()
+    timing = bootstrap_great_walk_ui(
+        page,
+        shell_timeout_ms=5_000,
+        spa_ready_timeout_ms=10_000,
+    )
+    assert page.goto_calls[0]["wait_until"] == "commit"
+    assert any("location.hash" in expr for expr, _ in page.evaluate_calls)
+    assert page.wait_for_function_calls == [10_000]
+    assert timing.shell_navigation_seconds >= 0
+    assert timing.spa_readiness_seconds >= 0
+    assert timing.total_seconds >= timing.shell_navigation_seconds
+
+
+def test_bootstrap_recovers_when_goto_times_out_on_doc_host():
+    page = FakeSpaPage(goto_raises=True, on_doc_host=True, spa_ready=True)
+    timing = bootstrap_great_walk_ui(
+        page,
+        shell_timeout_ms=30_000,
+        spa_ready_timeout_ms=15_000,
+    )
+    assert timing.navigation_recovered_after_timeout is True
+    assert timing.to_dict()["navigation_recovered_after_timeout"] is True
+    assert page.wait_for_function_calls == [15_000]
+    assert len(page.goto_calls) == 1
+
+
+def test_bootstrap_goto_timeout_off_host_raises_navigation_error_with_state():
+    page = FakeSpaPage(goto_raises=True, on_doc_host=False)
+    with pytest.raises(NavigationError, match="timed out or failed") as exc_info:
+        bootstrap_great_walk_ui(
+            page,
+            shell_timeout_ms=30_000,
+            spa_ready_timeout_ms=15_000,
+        )
+    err = exc_info.value
+    assert err.stage == "shell_navigation"
+    assert err.timeout_ms == 30_000
+    assert err.wait_until == "commit"
+    assert err.navigation_state is not None
+    assert err.navigation_state.get("on_doc_booking_host") is False
+    assert err.timing is not None
+    assert "shell_navigation_seconds" in err.timing
+
+
+def test_bootstrap_goto_timeout_on_host_but_ui_never_ready():
+    page = FakeSpaPage(goto_raises=True, on_doc_host=True, spa_ready=False)
+    with pytest.raises(NavigationError, match="UI did not become ready") as exc_info:
+        bootstrap_great_walk_ui(
+            page,
+            shell_timeout_ms=30_000,
+            spa_ready_timeout_ms=15_000,
+        )
+    err = exc_info.value
+    assert err.stage == "spa_readiness_after_shell_timeout"
+    assert err.timeout_ms == 15_000
+    assert err.navigation_recovered_after_timeout is False
+
+
+def test_stage_timing_fields_are_monotonic():
+    page = FakeSpaPage()
+    timing = bootstrap_great_walk_ui(
+        page,
+        shell_timeout_ms=5_000,
+        spa_ready_timeout_ms=5_000,
+        browser_start_seconds=0.5,
+    )
+    payload = timing.to_dict()
+    assert payload["browser_start_seconds"] == 0.5
+    assert payload["total_seconds"] >= (
+        payload["shell_navigation_seconds"]
+        + payload["route_navigation_seconds"]
+        + payload["spa_readiness_seconds"]
+    )
+
+
+def test_recovery_is_bounded_to_one_goto_attempt():
+    page = FakeSpaPage(goto_raises=True, on_doc_host=True, spa_ready=True)
+    bootstrap_great_walk_ui(page, shell_timeout_ms=5_000, spa_ready_timeout_ms=5_000)
+    assert len(page.goto_calls) == 1
+
+
+def test_collect_navigation_state_includes_host_and_counts():
+    page = FakeSpaPage()
+    state = collect_navigation_state(page)
+    assert state["on_doc_booking_host"] is True
+    assert state["visible_desktop_search_root_count"] == 1
+    assert state["ready_state"] == "interactive"
+
+
+def test_default_shell_navigation_timeout_is_suitable_for_slow_vm():
+    assert DEFAULT_SHELL_NAVIGATION_TIMEOUT_MS >= 45_000
 
 
 def test_wait_for_great_walk_ui_succeeds():

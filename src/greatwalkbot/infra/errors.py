@@ -20,9 +20,45 @@ class FetchError(RetryableError):
 class NavigationError(RetryableError):
     """DOC page navigation timed out or failed."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        stage: str | None = None,
+        timeout_ms: int | None = None,
+        wait_until: str | None = None,
+        navigation_state: dict | None = None,
+        timing: dict | None = None,
+        navigation_recovered_after_timeout: bool | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.stage = stage
+        self.timeout_ms = timeout_ms
+        self.wait_until = wait_until
+        self.navigation_state = navigation_state
+        self.timing = timing
+        self.navigation_recovered_after_timeout = navigation_recovered_after_timeout
+
 
 class UIReadinessError(RetryableError):
     """Great Walk UI did not become ready within the bounded wait."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        stage: str | None = None,
+        timeout_ms: int | None = None,
+        navigation_state: dict | None = None,
+        timing: dict | None = None,
+        shell_navigation_timed_out: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.stage = stage
+        self.timeout_ms = timeout_ms
+        self.navigation_state = navigation_state
+        self.timing = timing
+        self.shell_navigation_timed_out = shell_navigation_timed_out
 
 
 class TrackSelectorError(RetryableError):

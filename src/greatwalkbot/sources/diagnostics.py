@@ -196,6 +196,20 @@ def save_session_failure_diagnostics(
         summary["desktop_root_refresh"] = getattr(error, "root_change")
     if hasattr(error, "calendar_diagnostics") and getattr(error, "calendar_diagnostics", None):
         summary["date_calendar_diagnostics"] = getattr(error, "calendar_diagnostics")
+    if hasattr(error, "navigation_state") and getattr(error, "navigation_state", None):
+        summary["navigation_state"] = getattr(error, "navigation_state")
+    if hasattr(error, "timing") and getattr(error, "timing", None):
+        summary["stage_timing"] = getattr(error, "timing")
+    if hasattr(error, "stage") and getattr(error, "stage", None):
+        summary["failure_stage"] = getattr(error, "stage")
+    if hasattr(error, "timeout_ms") and getattr(error, "timeout_ms", None) is not None:
+        summary["stage_timeout_ms"] = getattr(error, "timeout_ms")
+    if getattr(error, "navigation_recovered_after_timeout", None) is not None:
+        summary["navigation_recovered_after_timeout"] = getattr(
+            error, "navigation_recovered_after_timeout"
+        )
+    if getattr(error, "shell_navigation_timed_out", False):
+        summary["shell_navigation_timed_out"] = True
 
     screenshot_path: Path | None = None
     if page is not None:

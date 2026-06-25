@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import dataclass
 from typing import Any, Protocol
+from urllib.parse import urlparse
 
 from greatwalkbot.constants import GREATWALK_HASH, SITE_URL
 from greatwalkbot.infra.errors import (
@@ -19,6 +21,8 @@ from greatwalkbot.sources.spa_timing import GOTO_WAIT_UNTIL
 
 logger = logging.getLogger(__name__)
 
+_DOC_BOOKING_HOST_SUFFIX = "bookings.doc.govt.nz"
+
 _GREAT_WALK_UI_JS = """() => {
     const items = document.querySelectorAll('[id^="great-walk-"]');
     return items.length > 0;
@@ -26,12 +30,18 @@ _GREAT_WALK_UI_JS = """() => {
 
 _DROPDOWN_BUTTON_IDS = ("great-walk-dropdown-button",)
 
-_DESKTOP_ROOT_JS = """() => {
+_NAVIGATION_STATE_JS = """() => {
     const roots = Array.from(document.querySelectorAll('div[role="search"]'))
         .filter(el => (el.className || '').toString().includes('themeTopsearch')
             && el.getBoundingClientRect().width > 0
             && el.getBoundingClientRect().height > 0);
-    return roots.length === 1 ? roots[0] : null;
+    const dropdowns = Array.from(document.querySelectorAll('#great-walk-dropdown-button'))
+        .filter(el => el.getBoundingClientRect().width > 0 && !el.id.includes('-mobile'));
+    return {
+        ready_state: document.readyState,
+        visible_desktop_search_root_count: roots.length,
+        visible_great_walk_dropdown_count: dropdowns.length,
+    };
 }"""
 
 _SELECTION_COMMITTED_JS = """({ optionId, trackName }) => {
@@ -58,6 +68,9 @@ _SELECTION_COMMITTED_JS = """({ optionId, trackName }) => {
 
 
 class SpaPage(Protocol):
+    @property
+    def url(self) -> str: ...
+
     def goto(self, url: str, *, wait_until: str, timeout: int) -> Any: ...
 
     def evaluate(self, expression: str, arg: Any = None) -> Any: ...
@@ -66,6 +79,81 @@ class SpaPage(Protocol):
 
     def wait_for_timeout(self, timeout: int) -> None: ...
 
+    def title(self) -> str: ...
+
+
+@dataclass(frozen=True)
+class StageNavigationTiming:
+    browser_start_seconds: float
+    shell_navigation_seconds: float
+    route_navigation_seconds: float
+    spa_readiness_seconds: float
+    total_seconds: float
+    navigation_recovered_after_timeout: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "browser_start_seconds": round(self.browser_start_seconds, 3),
+            "shell_navigation_seconds": round(self.shell_navigation_seconds, 3),
+            "route_navigation_seconds": round(self.route_navigation_seconds, 3),
+            "spa_readiness_seconds": round(self.spa_readiness_seconds, 3),
+            "total_seconds": round(self.total_seconds, 3),
+        }
+        if self.navigation_recovered_after_timeout:
+            payload["navigation_recovered_after_timeout"] = True
+        return payload
+
+
+def is_doc_booking_host(url: str) -> bool:
+    try:
+        host = urlparse(url).netloc.lower()
+    except Exception:
+        return _DOC_BOOKING_HOST_SUFFIX in url.lower()
+    return host.endswith(_DOC_BOOKING_HOST_SUFFIX)
+
+
+def collect_navigation_state(
+    page: SpaPage,
+    recorder: NetworkRecorder | None = None,
+) -> dict[str, Any]:
+    """Bounded snapshot of page transport and early SPA evidence."""
+    state: dict[str, Any] = {}
+    try:
+        state["url"] = str(page.url)[:500]
+    except Exception:
+        state["url"] = None
+    try:
+        state["title"] = str(page.title())[:200]
+    except Exception:
+        state["title"] = None
+    try:
+        dom = page.evaluate(_NAVIGATION_STATE_JS)
+        if isinstance(dom, dict):
+            state["ready_state"] = dom.get("ready_state")
+            state["visible_desktop_search_root_count"] = dom.get(
+                "visible_desktop_search_root_count"
+            )
+            state["visible_great_walk_dropdown_count"] = dom.get(
+                "visible_great_walk_dropdown_count"
+            )
+    except Exception as exc:
+        state["dom_probe_error"] = str(exc)[:200]
+    state["on_doc_booking_host"] = is_doc_booking_host(state.get("url") or "")
+    if recorder is not None:
+        timeline = recorder.timeline_dicts()
+        state["network_timeline_summary"] = {
+            "event_count": len(timeline),
+            "recent": [
+                {
+                    "path": event.get("path"),
+                    "status": event.get("status"),
+                    "phase": event.get("phase"),
+                }
+                for event in timeline[-10:]
+            ],
+        }
+    return state
+
 
 def navigate_to_site(
     page: SpaPage,
@@ -73,13 +161,26 @@ def navigate_to_site(
     site_url: str = SITE_URL,
     timeout_ms: int,
 ) -> None:
+    """Navigate DOC shell only. Raises on failure without SPA recovery."""
     try:
         page.goto(site_url, wait_until=GOTO_WAIT_UNTIL, timeout=timeout_ms)
     except Exception as exc:
         raise NavigationError(
             f"Navigation to {site_url!r} timed out or failed "
-            f"(wait_until={GOTO_WAIT_UNTIL!r}, timeout={timeout_ms}ms): {exc}"
+            f"(wait_until={GOTO_WAIT_UNTIL!r}, timeout={timeout_ms}ms): {exc}",
+            stage="shell_navigation",
+            timeout_ms=timeout_ms,
+            wait_until=GOTO_WAIT_UNTIL,
+            navigation_state=collect_navigation_state(page),
         ) from exc
+
+
+def apply_great_walk_route(
+    page: SpaPage,
+    *,
+    greatwalk_hash: str = GREATWALK_HASH,
+) -> None:
+    page.evaluate(f"window.location.hash = '{greatwalk_hash}'")
 
 
 def wait_for_great_walk_ui(page: SpaPage, *, timeout_ms: int) -> None:
@@ -88,8 +189,114 @@ def wait_for_great_walk_ui(page: SpaPage, *, timeout_ms: int) -> None:
     except Exception as exc:
         raise UIReadinessError(
             f"Great Walk UI not ready within {timeout_ms}ms "
-            f"(expected [id^='great-walk-'] elements): {exc}"
+            f"(expected [id^='great-walk-'] elements): {exc}",
+            stage="spa_readiness",
+            timeout_ms=timeout_ms,
+            navigation_state=collect_navigation_state(page),
         ) from exc
+
+
+def bootstrap_great_walk_ui(
+    page: SpaPage,
+    *,
+    site_url: str = SITE_URL,
+    greatwalk_hash: str = GREATWALK_HASH,
+    shell_timeout_ms: int,
+    spa_ready_timeout_ms: int,
+    recorder: NetworkRecorder | None = None,
+    browser_start_seconds: float = 0.0,
+) -> StageNavigationTiming:
+    """Navigate DOC shell, apply Great Walk route, and wait for UI readiness."""
+    bootstrap_started = time.monotonic()
+    shell_started = time.monotonic()
+    shell_timed_out = False
+    navigation_state_at_timeout: dict[str, Any] | None = None
+
+    try:
+        page.goto(site_url, wait_until=GOTO_WAIT_UNTIL, timeout=shell_timeout_ms)
+    except Exception as exc:
+        shell_timed_out = True
+        navigation_state_at_timeout = collect_navigation_state(page, recorder)
+        if not navigation_state_at_timeout.get("on_doc_booking_host"):
+            shell_elapsed = time.monotonic() - shell_started
+            timing = StageNavigationTiming(
+                browser_start_seconds=browser_start_seconds,
+                shell_navigation_seconds=shell_elapsed,
+                route_navigation_seconds=0.0,
+                spa_readiness_seconds=0.0,
+                total_seconds=time.monotonic() - bootstrap_started + browser_start_seconds,
+            )
+            raise NavigationError(
+                f"Navigation to {site_url!r} timed out or failed "
+                f"(wait_until={GOTO_WAIT_UNTIL!r}, timeout={shell_timeout_ms}ms): {exc}",
+                stage="shell_navigation",
+                timeout_ms=shell_timeout_ms,
+                wait_until=GOTO_WAIT_UNTIL,
+                navigation_state=navigation_state_at_timeout,
+                timing={
+                    **timing.to_dict(),
+                    "total_before_failure_seconds": timing.total_seconds,
+                },
+            ) from exc
+
+        if shell_timed_out:
+            logger.warning(
+                "Shell navigation timed out on DOC booking host; "
+                "attempting Great Walk SPA readiness wait"
+            )
+
+    shell_elapsed = time.monotonic() - shell_started
+    route_started = time.monotonic()
+    apply_great_walk_route(page, greatwalk_hash=greatwalk_hash)
+    route_elapsed = time.monotonic() - route_started
+
+    spa_started = time.monotonic()
+    try:
+        wait_for_great_walk_ui(page, timeout_ms=spa_ready_timeout_ms)
+    except UIReadinessError as exc:
+        spa_elapsed = time.monotonic() - spa_started
+        timing = StageNavigationTiming(
+            browser_start_seconds=browser_start_seconds,
+            shell_navigation_seconds=shell_elapsed,
+            route_navigation_seconds=route_elapsed,
+            spa_readiness_seconds=spa_elapsed,
+            total_seconds=time.monotonic() - bootstrap_started + browser_start_seconds,
+        )
+        if shell_timed_out:
+            raise NavigationError(
+                "Shell navigation timed out but DOC host was reachable; "
+                f"Great Walk UI did not become ready within {spa_ready_timeout_ms}ms",
+                stage="spa_readiness_after_shell_timeout",
+                timeout_ms=spa_ready_timeout_ms,
+                wait_until=GOTO_WAIT_UNTIL,
+                navigation_state=navigation_state_at_timeout
+                or collect_navigation_state(page, recorder),
+                timing={
+                    **timing.to_dict(),
+                    "total_before_failure_seconds": timing.total_seconds,
+                },
+                navigation_recovered_after_timeout=False,
+            ) from exc
+        raise UIReadinessError(
+            str(exc),
+            stage="spa_readiness",
+            timeout_ms=spa_ready_timeout_ms,
+            navigation_state=exc.navigation_state or collect_navigation_state(page, recorder),
+            timing={
+                **timing.to_dict(),
+                "total_before_failure_seconds": timing.total_seconds,
+            },
+        ) from exc
+
+    spa_elapsed = time.monotonic() - spa_started
+    return StageNavigationTiming(
+        browser_start_seconds=browser_start_seconds,
+        shell_navigation_seconds=shell_elapsed,
+        route_navigation_seconds=route_elapsed,
+        spa_readiness_seconds=spa_elapsed,
+        total_seconds=time.monotonic() - bootstrap_started + browser_start_seconds,
+        navigation_recovered_after_timeout=shell_timed_out,
+    )
 
 
 def open_great_walk_view(
@@ -99,10 +306,16 @@ def open_great_walk_view(
     greatwalk_hash: str = GREATWALK_HASH,
     navigation_timeout_ms: int,
     app_ready_timeout_ms: int,
-) -> None:
-    navigate_to_site(page, site_url=site_url, timeout_ms=navigation_timeout_ms)
-    page.evaluate(f"window.location.hash = '{greatwalk_hash}'")
-    wait_for_great_walk_ui(page, timeout_ms=app_ready_timeout_ms)
+    recorder: NetworkRecorder | None = None,
+) -> StageNavigationTiming:
+    return bootstrap_great_walk_ui(
+        page,
+        site_url=site_url,
+        greatwalk_hash=greatwalk_hash,
+        shell_timeout_ms=navigation_timeout_ms,
+        spa_ready_timeout_ms=app_ready_timeout_ms,
+        recorder=recorder,
+    )
 
 
 def open_track_dropdown(page: SpaPage) -> bool:
@@ -195,6 +408,7 @@ def commit_track_selection(
                 greatwalk_hash=greatwalk_hash,
                 navigation_timeout_ms=navigation_timeout_ms,
                 app_ready_timeout_ms=app_ready_timeout_ms,
+                recorder=recorder,
             )
 
         open_track_dropdown(page)

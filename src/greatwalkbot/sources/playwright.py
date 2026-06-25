@@ -6,7 +6,6 @@ import logging
 import time
 from datetime import date
 
-from greatwalkbot.constants import GREATWALK_HASH
 from greatwalkbot.itinerary_form import itinerary_form_nights
 from greatwalkbot.track_itineraries import has_itinerary_definition
 from greatwalkbot.infra.errors import RetryableError, SessionError
@@ -15,11 +14,7 @@ from greatwalkbot.parsing import build_gw_facility_request, parse_gw_facility_re
 from greatwalkbot.sources.diagnostics import save_session_failure_diagnostics
 from greatwalkbot.sources.fetch_timing import TrackFetchTiming
 from greatwalkbot.sources.session_manager import SessionManager
-from greatwalkbot.sources.spa_navigation import (
-    commit_track_selection,
-    navigate_to_site,
-    wait_for_great_walk_ui,
-)
+from greatwalkbot.sources.spa_navigation import bootstrap_great_walk_ui, commit_track_selection
 from greatwalkbot.sources.spa_timing import (
     DEFAULT_APP_READY_TIMEOUT_MS,
     DEFAULT_CAPTURE_TIMEOUT_MS,
@@ -151,16 +146,19 @@ class PlaywrightAvailabilitySource:
         started = time.monotonic()
         recorder = self._session.network
 
+        browser_started = time.monotonic()
         request_body = build_gw_facility_request(track, from_date, to_date)
         self._session.prepare_fetch(request_body)
         page = self._session.page
+        browser_start_seconds = time.monotonic() - browser_started
 
-        nav_t0 = time.monotonic()
-        navigate_to_site(page, timeout_ms=self.navigation_timeout_ms)
-        nav_t1 = time.monotonic()
-        page.evaluate(f"window.location.hash = '{GREATWALK_HASH}'")
-        wait_for_great_walk_ui(page, timeout_ms=self.app_ready_timeout_ms)
-        app_t1 = time.monotonic()
+        stage_timing = bootstrap_great_walk_ui(
+            page,
+            shell_timeout_ms=self.navigation_timeout_ms,
+            spa_ready_timeout_ms=self.app_ready_timeout_ms,
+            recorder=recorder,
+            browser_start_seconds=browser_start_seconds,
+        )
 
         self._session.begin_capture_cycle(place_id=track.place_id)
 
@@ -191,10 +189,17 @@ class PlaywrightAvailabilitySource:
 
         timing = TrackFetchTiming(
             track_slug=track.slug,
-            navigation_seconds=nav_t1 - nav_t0,
-            app_ready_seconds=app_t1 - nav_t1,
+            navigation_seconds=stage_timing.shell_navigation_seconds,
+            app_ready_seconds=(
+                stage_timing.route_navigation_seconds + stage_timing.spa_readiness_seconds
+            ),
             capture_seconds=capture_done - capture_started,
             total_seconds=capture_done - started,
+            browser_start_seconds=stage_timing.browser_start_seconds,
+            shell_navigation_seconds=stage_timing.shell_navigation_seconds,
+            route_navigation_seconds=stage_timing.route_navigation_seconds,
+            spa_readiness_seconds=stage_timing.spa_readiness_seconds,
+            navigation_recovered_after_timeout=stage_timing.navigation_recovered_after_timeout,
         )
 
         snapshot = parse_gw_facility_response(payload, track, from_date, to_date)

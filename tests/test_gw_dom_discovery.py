@@ -234,8 +234,7 @@ def test_inspect_cli_has_no_telegram_dedupe_or_search_side_effects():
         session = MagicMock()
         session.network.timeline_dicts.return_value = []
         session_cls.return_value = session
-        with patch("greatwalkbot.inspect_greatwalk_dom.navigate_to_site"):
-            with patch("greatwalkbot.inspect_greatwalk_dom.wait_for_great_walk_ui"):
+        with patch("greatwalkbot.inspect_greatwalk_dom.bootstrap_great_walk_ui"):
                 with patch("greatwalkbot.inspect_greatwalk_dom.commit_track_selection"):
                     with patch(
                         "greatwalkbot.inspect_greatwalk_dom.wait_for_selection_metadata",
@@ -297,8 +296,7 @@ def test_debug_search_reports_date_discovery_incomplete(tmp_path: Path):
         session.last_form_state = None
         session_cls.return_value = session
         with patch("greatwalkbot.debug_search.commit_track_selection"):
-            with patch("greatwalkbot.debug_search.navigate_to_site"):
-                with patch("greatwalkbot.debug_search.wait_for_great_walk_ui"):
+            with patch("greatwalkbot.debug_search.bootstrap_great_walk_ui"):
                     with patch(
                         "greatwalkbot.debug_search.wait_for_selection_metadata",
                         return_value=True,
@@ -363,8 +361,7 @@ def test_debug_search_success_when_desktop_form_ready():
         session.capture_availability_after_search = MagicMock(return_value={})
         session_cls.return_value = session
         with patch("greatwalkbot.debug_search.commit_track_selection"):
-            with patch("greatwalkbot.debug_search.navigate_to_site"):
-                with patch("greatwalkbot.debug_search.wait_for_great_walk_ui"):
+            with patch("greatwalkbot.debug_search.bootstrap_great_walk_ui"):
                     with patch(
                         "greatwalkbot.debug_search.wait_for_selection_metadata",
                         return_value=True,

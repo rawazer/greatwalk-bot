@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any
 
-from greatwalkbot.constants import GREATWALK_HASH
 from greatwalkbot.domain.plan import TripPlan
 from greatwalkbot.domain.track import TrackPreference
 from greatwalkbot.infra.errors import (
@@ -35,9 +35,8 @@ from greatwalkbot.sources.gw_desktop_form import (
 from greatwalkbot.sources.search_form import capture_search_form_state, prepare_search_form
 from greatwalkbot.sources.session_manager import SessionManager
 from greatwalkbot.sources.spa_navigation import (
+    bootstrap_great_walk_ui,
     commit_track_selection,
-    navigate_to_site,
-    wait_for_great_walk_ui,
 )
 from greatwalkbot.sources.spa_timing import (
     DEFAULT_APP_READY_TIMEOUT_MS,
@@ -67,6 +66,7 @@ class DebugSearchReport:
     error_type: str | None
     error_message: str | None
     diagnostics: DiagnosticArtifacts | None
+    navigation_timing: dict[str, Any] | None = None
 
     def to_text(self) -> str:
         lines = [
@@ -102,6 +102,14 @@ class DebugSearchReport:
         )
         if self.error_type:
             lines.extend([f"Error: {self.error_type}: {self.error_message}"])
+        if self.navigation_timing:
+            lines.extend(
+                [
+                    "",
+                    "Navigation timing:",
+                    json.dumps(self.navigation_timing, indent=2),
+                ]
+            )
         lines.extend(
             [
                 "",
@@ -202,16 +210,24 @@ def run_debug_search(
     network_timeline: list[dict[str, Any]] = []
     post_search_timeline: list[dict[str, Any]] = []
     metadata_confirmed = False
+    navigation_timing: dict[str, Any] | None = None
 
     try:
+        browser_started = time.monotonic()
         session.start()
+        browser_start_seconds = time.monotonic() - browser_started
         session.prepare_fetch(request_body)
         page = session.page
         recorder = session.network
 
-        navigate_to_site(page, timeout_ms=navigation_timeout_ms)
-        page.evaluate(f"window.location.hash = '{GREATWALK_HASH}'")
-        wait_for_great_walk_ui(page, timeout_ms=app_ready_timeout_ms)
+        stage_timing = bootstrap_great_walk_ui(
+            page,
+            shell_timeout_ms=navigation_timeout_ms,
+            spa_ready_timeout_ms=app_ready_timeout_ms,
+            recorder=recorder,
+            browser_start_seconds=browser_start_seconds,
+        )
+        navigation_timing = stage_timing.to_dict()
 
         session.begin_capture_cycle(place_id=track.place_id)
         commit_track_selection(
@@ -307,6 +323,8 @@ def run_debug_search(
         result = "failed"
         error_type = type(exc).__name__
         error_message = str(exc)
+        if navigation_timing is None and getattr(exc, "timing", None):
+            navigation_timing = exc.timing
         search_outcome = session.last_form_state
         form_state = form_state or getattr(exc, "form_state", None) or session.last_form_state
         if metadata_confirmed and selection_state is not None:
@@ -346,4 +364,5 @@ def run_debug_search(
         error_type=error_type,
         error_message=error_message,
         diagnostics=diagnostics,
+        navigation_timing=navigation_timing,
     )
