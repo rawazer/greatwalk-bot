@@ -156,11 +156,49 @@ class GreatWalkDateControlDiscoveryIncompleteError(RetryableError):
         date_iso: str | None = None,
         diagnostic_path: str | Path | None = None,
         form_state: dict | None = None,
+        calendar_diagnostics: dict | None = None,
     ) -> None:
         super().__init__(message)
         self.date_iso = date_iso
         self.diagnostic_path = str(diagnostic_path) if diagnostic_path else None
         self.form_state = form_state
+        self.calendar_diagnostics = calendar_diagnostics
+
+
+class GreatWalkDateUnavailableError(RetryableError):
+    """Requested start date is present in the picker but marked not available."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        date_iso: str | None = None,
+        aria_label: str | None = None,
+        form_state: dict | None = None,
+        calendar_diagnostics: dict | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.date_iso = date_iso
+        self.aria_label = aria_label
+        self.form_state = form_state
+        self.calendar_diagnostics = calendar_diagnostics
+
+
+class GreatWalkDatePickerError(RetryableError):
+    """Desktop React date-picker navigation or selection failed."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        date_iso: str | None = None,
+        form_state: dict | None = None,
+        calendar_diagnostics: dict | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.date_iso = date_iso
+        self.form_state = form_state
+        self.calendar_diagnostics = calendar_diagnostics
 
 
 class GreatWalkControlDiscoveryIncompleteError(RetryableError):

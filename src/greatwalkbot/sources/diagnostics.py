@@ -194,6 +194,8 @@ def save_session_failure_diagnostics(
         summary["click_interception"] = getattr(error, "click_diagnostics")
     if hasattr(error, "root_change") and getattr(error, "root_change", None):
         summary["desktop_root_refresh"] = getattr(error, "root_change")
+    if hasattr(error, "calendar_diagnostics") and getattr(error, "calendar_diagnostics", None):
+        summary["date_calendar_diagnostics"] = getattr(error, "calendar_diagnostics")
 
     screenshot_path: Path | None = None
     if page is not None:

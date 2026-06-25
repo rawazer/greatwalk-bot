@@ -12,6 +12,8 @@ from greatwalkbot.domain.plan import TripPlan
 from greatwalkbot.domain.track import TrackPreference
 from greatwalkbot.infra.errors import (
     GreatWalkDateControlDiscoveryIncompleteError,
+    GreatWalkDatePickerError,
+    GreatWalkDateUnavailableError,
     RetryableError,
 )
 from greatwalkbot.inspect_greatwalk_dom import wait_for_selection_metadata
@@ -282,7 +284,11 @@ def run_debug_search(
         )
         search_outcome = session.last_form_state
         result = "success"
-    except GreatWalkDateControlDiscoveryIncompleteError as exc:
+    except (
+        GreatWalkDateControlDiscoveryIncompleteError,
+        GreatWalkDateUnavailableError,
+        GreatWalkDatePickerError,
+    ) as exc:
         result = "failed"
         error_type = type(exc).__name__
         error_message = str(exc)

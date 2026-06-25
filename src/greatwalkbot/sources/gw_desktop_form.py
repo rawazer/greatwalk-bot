@@ -12,11 +12,17 @@ from greatwalkbot.infra.errors import (
     GreatWalkControlNotClickableError,
     GreatWalkControlNotFoundError,
     GreatWalkDateControlDiscoveryIncompleteError,
+    GreatWalkDatePickerError,
+    GreatWalkDateUnavailableError,
     GreatWalkDesktopRootError,
     SearchFormValidationError,
 )
 from greatwalkbot.models import Track
 from greatwalkbot.sources.gw_active_form import normalize_date_string
+from greatwalkbot.sources.gw_desktop_date_picker import (
+    DATE_MOBILE_SELECTOR,
+    select_desktop_date_via_react_picker,
+)
 from greatwalkbot.sources.spa_timing import DEFAULT_CONTROL_CLICKABLE_TIMEOUT_MS
 
 DESKTOP_ROOT_SELECTOR = 'div[role="search"].themeTopsearch:visible'
@@ -202,56 +208,6 @@ _CLICK_DROPDOWN_OPTION_JS = """
         }
     }
     return false;
-}
-"""
-
-_SET_DATE_JS = """
-(iso) => {
-    const LOADING = ['fetching content'];
-    const root = Array.from(document.querySelectorAll('div[role="search"]'))
-        .find(el => (el.className || '').toString().includes('themeTopsearch')
-            && el.getBoundingClientRect().width > 0);
-    if (!root) return { ok: false, reason: 'no-desktop-root' };
-
-    function isVisible(el) {
-        if (!el) return false;
-        const style = window.getComputedStyle(el);
-        if (style.display === 'none' || style.visibility === 'hidden') return false;
-        return el.getBoundingClientRect().width > 0;
-    }
-
-    const cells = document.querySelectorAll(`[data-date="${iso}"]`);
-    for (const cell of cells) {
-        if (!isVisible(cell)) continue;
-        if (cell.closest('[id*="-mobile"]')) continue;
-        cell.click();
-        return { ok: true, method: 'data-date-cell' };
-    }
-
-    const inputs = document.querySelectorAll(
-        'input[type="date"], input[type="text"], input.react-datepicker-ignore-onclickoutside'
-    );
-    for (const input of inputs) {
-        if (!isVisible(input)) continue;
-        if (input.id === 'arrivaldate') continue;
-        if (!input.closest('.react-datepicker, [class*="datepicker"], [role="dialog"]')
-            && !root.contains(input)) continue;
-        input.value = iso;
-        input.dispatchEvent(new Event('input', { bubbles: true }));
-        input.dispatchEvent(new Event('change', { bubbles: true }));
-        return { ok: true, method: 'visible-input', id: input.id || null };
-    }
-
-    const labelled = document.querySelectorAll('[aria-label]');
-    for (const el of labelled) {
-        if (!isVisible(el)) continue;
-        const label = (el.getAttribute('aria-label') || '').toLowerCase();
-        if (!label.includes(iso) && !label.includes(iso.replace(/-/g, '/'))) continue;
-        el.click();
-        return { ok: true, method: 'aria-label', aria_label: el.getAttribute('aria-label') };
-    }
-
-    return { ok: false, reason: 'no-date-control-found' };
 }
 """
 
@@ -817,18 +773,51 @@ def set_desktop_start_date(
     binding: DesktopRootBinding | None = None,
     *,
     root_change: dict[str, Any] | None = None,
-) -> None:
+) -> dict[str, Any]:
     binding = binding or resolve_desktop_great_walk_root(page)
-    open_desktop_date_picker(page, binding, root_change=root_change)
-    result = page.evaluate(_SET_DATE_JS, target.isoformat())
-    if not isinstance(result, dict) or not result.get("ok"):
-        reason = result.get("reason") if isinstance(result, dict) else "unknown"
-        raise GreatWalkDateControlDiscoveryIncompleteError(
-            f"Could not set desktop start date via date picker ({reason}). "
-            "Run inspect-greatwalk-dom --open-date-picker for evidence.",
-            date_iso=target.isoformat(),
+    root = page.locator(binding.selector)
+    if root.locator(DATE_BUTTON_SELECTOR).count() == 0:
+        raise GreatWalkControlNotFoundError(
+            "Desktop start date button not found",
+            control="start_date",
         )
-    page.wait_for_timeout(300)
+    if page.locator(DATE_MOBILE_SELECTOR).count() > 0:
+        mobile = page.locator(DATE_MOBILE_SELECTOR).first
+        try:
+            if mobile.is_visible():
+                pass  # present but must not be used; desktop trigger is separate
+        except Exception:
+            pass
+
+    def read_start_date_control() -> dict[str, Any]:
+        state = read_desktop_form_state(page, binding, start_date=target)
+        return dict(state.get("start_date_control") or {})
+
+    def open_picker() -> None:
+        click_desktop_control(
+            page,
+            binding,
+            DATE_BUTTON_SELECTOR,
+            "start_date",
+            root_change=root_change,
+        )
+
+    try:
+        return select_desktop_date_via_react_picker(
+            page,
+            target=target,
+            open_picker=open_picker,
+            read_start_date_control=read_start_date_control,
+        )
+    except GreatWalkDateUnavailableError:
+        raise
+    except GreatWalkDatePickerError:
+        raise
+    except GreatWalkControlNotFoundError as exc:
+        raise GreatWalkDateControlDiscoveryIncompleteError(
+            str(exc),
+            date_iso=target.isoformat(),
+        ) from exc
 
 
 def click_desktop_search_button(
@@ -964,11 +953,15 @@ def _ensure_desktop_date(
     state: dict[str, Any],
     *,
     root_change: dict[str, Any] | None = None,
-) -> ControlActionOutcome:
+) -> dict[str, Any]:
     if not _control_needs_change(state, "start_date_control"):
-        return "already_matched"
+        return {"outcome": "already_matched", "calendar_diagnostics": None}
     try:
-        set_desktop_start_date(page, start_date, binding, root_change=root_change)
+        result = set_desktop_start_date(page, start_date, binding, root_change=root_change)
+    except GreatWalkDateUnavailableError:
+        raise
+    except GreatWalkDatePickerError:
+        raise
     except GreatWalkDateControlDiscoveryIncompleteError:
         raise
     except GreatWalkControlNotFoundError as exc:
@@ -976,14 +969,19 @@ def _ensure_desktop_date(
             str(exc),
             date_iso=start_date.isoformat(),
         ) from exc
+    if not isinstance(result, dict):
+        result = {}
+    calendar = result.get("calendar_diagnostics")
+    if result.get("action") == "already_matched":
+        return {"outcome": "already_matched", "calendar_diagnostics": calendar}
     if _verify_control_changed(
         page,
         binding,
         start_date=start_date,
         control_key="start_date_control",
     ):
-        return "changed_and_verified"
-    return "change_failed"
+        return {"outcome": "changed_and_verified", "calendar_diagnostics": calendar}
+    return {"outcome": "change_failed", "calendar_diagnostics": calendar}
 
 
 def _ensure_desktop_nights(
@@ -1085,13 +1083,15 @@ def prepare_desktop_search_form(
             root_change=root_change,
         )
 
-    control_actions["date"] = _ensure_desktop_date(
+    date_prep = _ensure_desktop_date(
         page,
         binding,
         start_date,
         state,
         root_change=root_change,
     )
+    control_actions["date"] = str(date_prep["outcome"])
+    date_calendar_diag = date_prep.get("calendar_diagnostics")
     state = read_desktop_form_state(
         page,
         binding,
@@ -1100,6 +1100,8 @@ def prepare_desktop_search_form(
         nights=nights,
         people_size=people_size,
     )
+    if date_calendar_diag:
+        state["date_calendar_diagnostics"] = date_calendar_diag
 
     control_actions["nights"] = _ensure_desktop_nights(
         page,
