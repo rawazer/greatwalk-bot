@@ -89,10 +89,12 @@ Watch mode is designed for unattended long-running use:
 | **[First run](docs/first-run.md)** | Configure a trip from the honeymoon template before or after deploy |
 | **[Operations](docs/operations.md)** | Updates, logs, restart, manual polls, troubleshooting |
 
-Quick systemd install (see deployment guide for full steps):
+Quick systemd install (see [deployment guide](docs/deployment.md) for full `/opt/greatwalk-bot` setup):
 
 ```bash
-sudo cp deploy/greatwalk-bot.service /etc/systemd/system/   # edit placeholders first
+# Substitute placeholders in deploy/greatwalk-bot.service first (greatwalk, /opt/greatwalk, /opt/greatwalk-bot)
+sudo cp deploy/greatwalk-bot.service /etc/systemd/system/
+sudo systemctl daemon-reload
 sudo systemctl enable --now greatwalk-bot
 ```
 

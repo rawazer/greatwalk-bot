@@ -79,10 +79,11 @@ Exit code `0` means ready; `1` means fix the reported errors before deploying.
 
 ## 6. Deploy with systemd
 
-See [deployment.md](deployment.md) for the full VM setup (environment file, unit placeholders, enable commands).
+See [deployment.md](deployment.md) for the full VM setup (`greatwalk` user, `/opt/greatwalk-bot`, environment file, unit placeholders).
 
 ```bash
-# Edit deploy/greatwalk-bot.service placeholders, then:
+cd /opt/greatwalk-bot
+# Substitute placeholders, then:
 sudo cp deploy/greatwalk-bot.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now greatwalk-bot

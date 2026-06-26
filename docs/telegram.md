@@ -63,6 +63,9 @@ Contents (mode `600` recommended):
 ```bash
 GREATWALKBOT_TELEGRAM_BOT_TOKEN=your-bot-token
 GREATWALKBOT_TELEGRAM_CHAT_ID=your-chat-id
+
+# Optional — default dedupe path is data/seen.db under /opt/greatwalk-bot
+# GREATWALKBOT_SEEN_DB=/opt/greatwalk-bot/data/seen.db
 ```
 
 ```bash
@@ -83,7 +86,7 @@ sudo systemctl daemon-reload
 sudo systemctl restart greatwalk-bot
 ```
 
-For a **user** service on a home machine, use `~/.config/greatwalkbot/env` instead:
+For a **user** service on a **development machine** (not production), use `~/.config/greatwalkbot/env` instead:
 
 ```bash
 mkdir -p ~/.config/greatwalkbot
@@ -101,6 +104,8 @@ See [deployment.md](deployment.md) for the full service setup.
 ## 6. Test delivery
 
 ```bash
+cd /opt/greatwalk-bot
+set -a && source /etc/greatwalk-bot/greatwalk-bot.env && set +a
 uv run gwbot notify-test config.yaml
 ```
 

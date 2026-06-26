@@ -8,33 +8,77 @@ For updates, logs, and restarts after deployment, see **[Operations](operations.
 
 ---
 
+## Production layout
+
+The official production target is:
+
+| Item | Path |
+|------|------|
+| Service user | `greatwalk` |
+| Service account home | `/opt/greatwalk` |
+| Application | `/opt/greatwalk-bot` |
+| Secrets | `/etc/greatwalk-bot/greatwalk-bot.env` |
+| systemd unit | `/etc/systemd/system/greatwalk-bot.service` |
+
+### Production filesystem layout
+
+```
+/opt/greatwalk-bot/
+    config.yaml          # trip configuration (gitignored)
+    .venv/               # Python environment (uv sync)
+    logs/
+        greatwalkbot.log
+        status.json
+    data/
+        seen.db          # notification dedupe (default path)
+    src/
+    ...
+
+/opt/greatwalk/          # service account home (uv, shell profile)
+    .local/bin/uv
+
+/etc/greatwalk-bot/
+    greatwalk-bot.env    # Telegram tokens and optional overrides
+
+/etc/systemd/system/
+    greatwalk-bot.service
+```
+
+**Why `/opt` instead of a developer home directory?**
+
+- **SELinux** — On Oracle Linux and RHEL, systemd services running executables from `/home` often fail with *Permission denied* even when Unix permissions are correct. `/opt` is the conventional location for third-party application trees.
+- **Linux conventions** — Dedicated service accounts with application code under `/opt` match standard server packaging practice.
+- **Secrets separation** — Tokens live in `/etc/greatwalk-bot/`, not inside the git tree.
+- **Backup and migration** — Back up `/opt/greatwalk-bot` (code + state) and `/etc/greatwalk-bot/` (secrets) independently; reinstall on a new VM by restoring those paths and re-enabling the unit.
+
+---
+
 ## 1. Prerequisites and assumptions
 
 | Requirement | Details |
 |-------------|---------|
-| **Distributions** | **Ubuntu 22.04+** or **Debian 12+** (primary; commands below use `apt`). **Oracle Linux 8/9** and **RHEL 8/9** are supported with `dnf` equivalents noted where they differ. The application is not Oracle-specific — Oracle Cloud VMs are a common host, not a code dependency. |
-| **User** | A normal **non-root** Linux account for cloning and running the app (examples use `greatwalk`). systemd runs the service as that user. |
+| **Distributions** | **Oracle Linux 9** (primary production target; commands below use `dnf`). **Ubuntu 22.04+** / **Debian 12+** are supported with `apt` alternatives noted. |
+| **User** | Dedicated system account **`greatwalk`** — not root, not a personal login. |
 | **Network** | Outbound HTTPS to `bookings.doc.govt.nz` and the Telegram API if notifications are enabled. |
 | **Git** | To clone the repository. |
 | **Python** | **3.13+** (installed automatically by [uv](https://docs.astral.sh/uv/) during `uv sync`). |
 | **uv** | Package manager used by this repo (`uv sync`, `uv run gwbot …`). |
-| **Playwright** | Chromium browser + OS libraries required for the default `playwright` availability source. |
-
-Assumed paths in examples (adjust to your VM):
-
-| Placeholder | Example value |
-|-------------|---------------|
-| Service user | `greatwalk` |
-| Repo directory | `/home/greatwalk/greatwalk-bot` |
-| Environment file | `/etc/greatwalk-bot/greatwalk-bot.env` |
+| **Playwright** | Chromium browser + OS libraries for the default `playwright` availability source. |
 
 ---
 
 ## 2. Initial machine setup
 
-Run these steps as your service user unless noted.
+Run privileged steps as **root** (or with `sudo`). Application steps as **`greatwalk`**.
 
 ### 2.1 Update packages and install base tools
+
+**Oracle Linux 9:**
+
+```bash
+sudo dnf update -y
+sudo dnf install -y git curl ca-certificates
+```
 
 **Ubuntu / Debian:**
 
@@ -44,44 +88,31 @@ sudo apt upgrade -y
 sudo apt install -y git curl ca-certificates
 ```
 
-**Oracle Linux / RHEL:**
+### 2.2 Create the service account and application directory
 
 ```bash
-sudo dnf update -y
-sudo dnf install -y git curl ca-certificates
+sudo useradd --system --create-home --home-dir /opt/greatwalk --shell /bin/bash greatwalk
+sudo mkdir -p /opt/greatwalk-bot
+sudo chown greatwalk:greatwalk /opt/greatwalk-bot
 ```
 
-### 2.2 Create the service user (optional but recommended)
-
-Skip if you already have the account you want to use.
+### 2.3 Install uv (durable absolute path)
 
 ```bash
-sudo useradd -m -s /bin/bash greatwalk
-sudo su - greatwalk
-```
-
-### 2.3 Install uv (durable, non-interactive path)
-
-Install uv into the service user's home so the path is stable for manual commands and documentation:
-
-```bash
+sudo -iu greatwalk
 curl -LsSf https://astral.sh/uv/install.sh | sh
+/opt/greatwalk/.local/bin/uv --version
 ```
 
-Confirm the absolute path (used in examples below):
-
-```bash
-/home/greatwalk/.local/bin/uv --version
-```
-
-systemd in this guide invokes **`/home/greatwalk/greatwalk-bot/.venv/bin/gwbot`** directly (created by `uv sync`), so the service does **not** depend on shell `PATH` initialization. Use the absolute `uv` path for install/sync commands in scripts and cron.
+systemd invokes **`/opt/greatwalk-bot/.venv/bin/gwbot`** directly (created by `uv sync`), so the service does **not** depend on shell `PATH` initialization. Use **`/opt/greatwalk/.local/bin/uv`** for install and sync commands in scripts and cron.
 
 ### 2.4 Clone the repository
 
+Still as `greatwalk`:
+
 ```bash
-cd ~
-git clone https://github.com/YOUR_ORG/greatwalk-bot.git
-cd greatwalk-bot
+git clone https://github.com/YOUR_ORG/greatwalk-bot.git /opt/greatwalk-bot
+cd /opt/greatwalk-bot
 ```
 
 Replace the URL with your fork or mirror.
@@ -89,43 +120,65 @@ Replace the URL with your fork or mirror.
 ### 2.5 Install Python dependencies
 
 ```bash
-/home/greatwalk/.local/bin/uv sync
+/opt/greatwalk/.local/bin/uv sync
 ```
 
-This creates `.venv/` in the repo with the `gwbot` CLI at `.venv/bin/gwbot`.
+This creates `/opt/greatwalk-bot/.venv/` with the `gwbot` CLI at `.venv/bin/gwbot`.
 
-### 2.6 Install Playwright Chromium and OS dependencies
+### 2.6 Install Playwright OS dependencies and Chromium
 
-Install the browser binary into the project environment:
+Playwright does **not** support `playwright install-deps` on Oracle Linux (including ARM Ampere). Install system libraries with your package manager, then install the browser into the project venv.
+
+**Oracle Linux 9** (tested approach for production):
 
 ```bash
-/home/greatwalk/.local/bin/uv run playwright install chromium
+sudo dnf install -y \
+  alsa-lib \
+  atk \
+  at-spi2-atk \
+  at-spi2-core \
+  cairo \
+  cups-libs \
+  dbus-libs \
+  libX11 \
+  libXcomposite \
+  libXdamage \
+  libXext \
+  libXfixes \
+  libXi \
+  libXrandr \
+  libXrender \
+  libXtst \
+  libdrm \
+  libxkbcommon \
+  mesa-libgbm \
+  nspr \
+  nss \
+  pango
 ```
 
-Install required system libraries. **Preferred:** use Playwright's helper (requires sudo):
+Then as `greatwalk`:
 
 ```bash
-/home/greatwalk/.local/bin/uv run playwright install-deps chromium
+cd /opt/greatwalk-bot
+/opt/greatwalk/.local/bin/uv run playwright install chromium
 ```
 
-**Ubuntu / Debian manual alternative** (if `install-deps` is unavailable):
+If Chromium fails to start with a missing shared library, use `dnf provides '*/libfoo.so.*'` to find the owning package and install it.
+
+**Ubuntu / Debian** (development or non-Oracle hosts):
 
 ```bash
 sudo apt install -y \
   libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
   libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
   libgbm1 libasound2 libpango-1.0-0 libcairo2
+
+cd /opt/greatwalk-bot
+/opt/greatwalk/.local/bin/uv run playwright install chromium
 ```
 
-**Oracle Linux / RHEL:** run `playwright install-deps chromium` first; if packages are missing, install the closest equivalents from your distribution's repositories or enable **EPEL** / **CodeReady Builder** as needed. Package names differ from Debian — do not blindly translate the `apt` list.
-
-Verify dependencies without modifying the system:
-
-```bash
-/home/greatwalk/.local/bin/uv run playwright install-deps --dry-run chromium
-```
-
-Non-zero exit means required packages are still missing.
+Do **not** use `playwright install-deps` on Oracle Linux — it falls back to `apt-get` and fails.
 
 ---
 
@@ -134,7 +187,7 @@ Non-zero exit means required packages are still missing.
 ### 3.1 Create `config.yaml`
 
 ```bash
-cd ~/greatwalk-bot
+cd /opt/greatwalk-bot
 cp examples/nz-honeymoon-2026.yaml config.yaml
 # Or: cp config.example.yaml config.yaml
 ```
@@ -190,24 +243,25 @@ See [first-run.md](first-run.md) and [itinerary-availability.md](itinerary-avail
 Offline feasibility (no DOC contact):
 
 ```bash
-/home/greatwalk/.local/bin/uv run gwbot plan-check config.yaml
+cd /opt/greatwalk-bot
+/opt/greatwalk/.local/bin/uv run gwbot plan-check config.yaml
 ```
 
 Pre-deploy readiness (read-only DOC fetch per track, validates notifiers):
 
 ```bash
-/home/greatwalk/.local/bin/uv run gwbot preflight config.yaml
+/opt/greatwalk/.local/bin/uv run gwbot preflight config.yaml
 ```
 
 Optional Telegram test during preflight:
 
 ```bash
-/home/greatwalk/.local/bin/uv run gwbot preflight config.yaml --send-test-notification
+/opt/greatwalk/.local/bin/uv run gwbot preflight config.yaml --send-test-notification
 ```
 
 Exit code `0` means ready; `1` means fix reported errors first.
 
-If AWS WAF blocks headless Chromium, add `--headed` to preflight (requires a display — uncommon on headless VPS).
+If AWS WAF blocks headless Chromium, add `--headed` to preflight (requires a display — uncommon on a headless VPS).
 
 ---
 
@@ -233,7 +287,7 @@ GREATWALKBOT_TELEGRAM_CHAT_ID=000000000
 
 # Optional
 # GREATWALKBOT_LOG_LEVEL=INFO
-# GREATWALKBOT_SEEN_DB=/home/greatwalk/greatwalk-bot/data/seen.db
+# GREATWALKBOT_SEEN_DB=/opt/greatwalk-bot/data/seen.db
 # GREATWALKBOT_DIAGNOSTICS_RETENTION=7
 ```
 
@@ -242,7 +296,7 @@ GREATWALKBOT_TELEGRAM_CHAT_ID=000000000
 | `GREATWALKBOT_TELEGRAM_BOT_TOKEN` | When Telegram enabled | Bot token from [@BotFather](https://t.me/BotFather) |
 | `GREATWALKBOT_TELEGRAM_CHAT_ID` | When Telegram enabled | Target chat ID |
 | `GREATWALKBOT_LOG_LEVEL` | No | `INFO` (default) or `DEBUG` for per-date rejection detail |
-| `GREATWALKBOT_SEEN_DB` | No | Override dedupe SQLite path (default: `data/seen.db` under WorkingDirectory) |
+| `GREATWALKBOT_SEEN_DB` | No | Override dedupe SQLite path. Default: `data/seen.db` relative to `WorkingDirectory` (`/opt/greatwalk-bot/data/seen.db`). Set explicitly only if you relocate state. |
 | `GREATWALKBOT_DIAGNOSTICS_RETENTION` | No | Days to retain diagnostic artifacts |
 
 Config keys `bot_token_env` and `chat_id_env` in YAML are **names** of these variables, not the secrets themselves.
@@ -262,8 +316,8 @@ If Telegram is disabled (`notifications.telegram.enabled: false`), the file may 
 
 ```bash
 set -a && source /etc/greatwalk-bot/greatwalk-bot.env && set +a
-cd ~/greatwalk-bot
-/home/greatwalk/.local/bin/uv run gwbot notify-test config.yaml
+cd /opt/greatwalk-bot
+/opt/greatwalk/.local/bin/uv run gwbot notify-test config.yaml
 ```
 
 This does not contact DOC or launch Playwright.
@@ -272,24 +326,24 @@ This does not contact DOC or launch Playwright.
 
 ## 5. systemd service
 
-The repository ships a **system** unit template at `deploy/greatwalk-bot.service`. It runs as your dedicated user, loads `/etc/greatwalk-bot/greatwalk-bot.env`, and invokes the project venv directly (no shell, no `PATH`).
+The repository ships a **system** unit template at `deploy/greatwalk-bot.service`. It runs as `greatwalk`, loads `/etc/greatwalk-bot/greatwalk-bot.env`, and invokes the project venv directly (no shell, no `PATH`).
 
-### 5.1 Render the unit file
+### 5.1 Render and install the unit file
 
-Ensure the service user owns the repo (needed for `logs/` and `data/`):
+Ensure `greatwalk` owns the application tree (needed for `logs/` and `data/`):
 
 ```bash
-sudo chown -R greatwalk:greatwalk /home/greatwalk/greatwalk-bot
+sudo chown -R greatwalk:greatwalk /opt/greatwalk-bot
 ```
 
-Edit placeholders in the template, or use `sed` after copying:
+Edit placeholders in the template, or use `sed`:
 
 ```bash
-cd ~/greatwalk-bot
+cd /opt/greatwalk-bot
 
 GREATWALKBOT_USER=greatwalk
-GREATWALKBOT_HOME=/home/greatwalk
-GREATWALKBOT_REPO=/home/greatwalk/greatwalk-bot
+GREATWALKBOT_HOME=/opt/greatwalk
+GREATWALKBOT_REPO=/opt/greatwalk-bot
 
 sed \
   -e "s|__GREATWALKBOT_USER__|${GREATWALKBOT_USER}|g" \
@@ -301,7 +355,7 @@ sudo cp /tmp/greatwalk-bot.service /etc/systemd/system/greatwalk-bot.service
 rm /tmp/greatwalk-bot.service
 ```
 
-Ensure `.venv/bin/gwbot` exists (`uv sync` must have completed successfully).
+Ensure `/opt/greatwalk-bot/.venv/bin/gwbot` exists (`uv sync` must have completed successfully).
 
 ### 5.2 Enable and start
 
@@ -325,38 +379,22 @@ sudo systemctl restart greatwalk-bot
 sudo systemctl disable greatwalk-bot
 ```
 
-### 5.5 User-level alternative (home server)
-
-For a personal machine without sudo, you can use a **user** systemd unit instead:
-
-```bash
-mkdir -p ~/.config/systemd/user
-# Edit deploy/greatwalk-bot.service paths manually, change WantedBy=default.target,
-# remove User=/Group= lines, set EnvironmentFile=%h/.config/greatwalkbot/env
-cp deploy/greatwalk-bot.service ~/.config/systemd/user/greatwalk-bot.service
-systemctl --user daemon-reload
-systemctl --user enable --now greatwalk-bot
-sudo loginctl enable-linger "$USER"
-```
-
-See [telegram.md](telegram.md) for a user-level environment file at `~/.config/greatwalkbot/env`.
-
 ---
 
 ## 6. Verification checklist
 
-Run these after the service is installed (or before enable, for manual validation).
+Run these after the service is installed (or before enable, for manual validation). Commands assume you are logged in as `greatwalk` with `cd /opt/greatwalk-bot`, or use the absolute paths shown.
 
 | Step | Command | Expected outcome |
 |------|---------|------------------|
-| CLI available | `/home/greatwalk/greatwalk-bot/.venv/bin/gwbot --help` | Help text; exit 0 |
-| Config offline | `uv run gwbot plan-check config.yaml` | `Feasibility: YES` (or fix config) |
-| One poll cycle | `uv run gwbot watch config.yaml --once` | Completes without error; writes `logs/` and `data/seen.db` |
-| Optional debug fetch | `uv run gwbot debug-search config.yaml --track milford --date 2026-12-07` | Single-track search diagnostics (contacts DOC) |
-| Telegram | `uv run gwbot notify-test config.yaml` | Test message in Telegram (with env file sourced) |
+| CLI available | `/opt/greatwalk-bot/.venv/bin/gwbot --help` | Help text; exit 0 |
+| Config offline | `/opt/greatwalk/.local/bin/uv run gwbot plan-check config.yaml` | `Feasibility: YES` (or fix config) |
+| One poll cycle | `/opt/greatwalk/.local/bin/uv run gwbot watch config.yaml --once` | Completes without error; writes `logs/` and `data/seen.db` |
+| Optional debug fetch | `/opt/greatwalk/.local/bin/uv run gwbot debug-search config.yaml --track milford --date 2026-12-07` | Single-track search diagnostics (contacts DOC) |
+| Telegram | `/opt/greatwalk/.local/bin/uv run gwbot notify-test config.yaml` | Test message in Telegram (with env file sourced) |
 | Service active | `sudo systemctl status greatwalk-bot` | `active (running)` |
 | Journal | `sudo journalctl -u greatwalk-bot -n 20 --no-pager` | Poll cycle log lines, no crash loop |
-| Runtime metrics | `uv run gwbot status` | Recent timestamps in `logs/status.json` |
+| Runtime metrics | `/opt/greatwalk/.local/bin/uv run gwbot status` | Recent timestamps in `logs/status.json` |
 
 If headless fetches fail with WAF errors, retry with `--headed` on manual commands only.
 
@@ -367,42 +405,61 @@ If headless fetches fail with WAF errors, retry with `--headed` on manual comman
 When pulling new releases:
 
 ```bash
-cd /home/greatwalk/greatwalk-bot
-git pull
-/home/greatwalk/.local/bin/uv sync
+cd /opt/greatwalk-bot
+sudo -u greatwalk git pull
+sudo -u greatwalk /opt/greatwalk/.local/bin/uv sync
 sudo systemctl restart greatwalk-bot
 ```
 
-If Playwright or browser requirements changed upstream, re-run:
+If Playwright browser requirements changed upstream, re-run:
 
 ```bash
-/home/greatwalk/.local/bin/uv run playwright install chromium
-/home/greatwalk/.local/bin/uv run playwright install-deps chromium
+cd /opt/greatwalk-bot
+sudo -u greatwalk /opt/greatwalk/.local/bin/uv run playwright install chromium
 ```
+
+Reinstall OS libraries with `dnf` only if Chromium reports a missing `.so` after the upgrade.
 
 See **[Operations](operations.md)** for day-to-day commands.
 
 ---
 
-## Runtime state locations
+## Troubleshooting
 
-All paths are relative to `WorkingDirectory` (`__GREATWALKBOT_REPO__`):
+| Symptom | Action |
+|---------|--------|
+| Service fails immediately | `sudo journalctl -u greatwalk-bot -n 50 --no-pager` |
+| No availability captured | Try `gwbot check` with `--headed` if WAF blocks headless traffic |
+| Duplicate notifications after edit | Normal if you deleted `data/seen.db` |
+| Status file stale | Watcher not running, or crashed before flush |
 
-| Path | Purpose |
-|------|---------|
-| `config.yaml` | Trip configuration (not in git) |
-| `data/seen.db` | Persistent notification deduplication |
-| `logs/greatwalkbot.log` | Rotating application log |
-| `logs/status.json` | Health metrics for `gwbot status` |
+### Service fails with "Permission denied"
 
-See [runtime-state.md](runtime-state.md) for the status JSON schema.
+On **Oracle Linux**, **RHEL**, and other SELinux-enforcing systems, systemd may refuse to execute binaries under a user's home directory (`/home/...`) even when `chmod` and ownership look correct. journald often shows:
+
+```
+greatwalk-bot.service: Failed to execute ... Permission denied
+```
+
+or AVC denials in `/var/log/audit/audit.log`.
+
+**Fix:** Deploy under **`/opt/greatwalk-bot`** with a dedicated **`greatwalk`** service account, as this guide describes. Avoid running the production unit from `/home/opc`, `/home/greatwalk`, or any personal home directory.
+
+If you must diagnose SELinux:
+
+```bash
+sudo ausearch -m avc -ts recent
+sudo setsebool -P domain_can_mmap_files 1   # rarely needed; prefer correct paths first
+```
+
+Relocating the repo to `/opt/greatwalk-bot` and restoring `greatwalk:greatwalk` ownership is the supported production layout.
 
 ---
 
 ## Security notes
 
 - Do not commit `config.yaml`, `logs/`, `data/`, or `/etc/greatwalk-bot/greatwalk-bot.env`.
-- Run as an unprivileged user; the watcher only reads public DOC availability.
+- Run as the unprivileged `greatwalk` user; the watcher only reads public DOC availability.
 - Restrict environment file permissions (`chmod 600`).
 - Revoke leaked bot tokens via [@BotFather](https://t.me/BotFather).
 
@@ -410,8 +467,14 @@ See [runtime-state.md](runtime-state.md) for the status JSON schema.
 
 ## Oracle Cloud notes
 
-Oracle Cloud Infrastructure free-tier VMs often run **Oracle Linux**. This project does not depend on OCI APIs or shapes — any Linux VPS with outbound HTTPS works the same way. Typical caveats:
+Oracle Cloud Infrastructure free-tier VMs often run **Oracle Linux 9** on **ARM (Ampere)**. This project does not depend on OCI APIs — any Linux VPS with outbound HTTPS works the same way.
 
-- Ensure **ingress** firewall rules allow **outbound** HTTPS (default on most images).
-- Arm-based Ampere instances work if Python 3.13+ wheels are available for your architecture (`uv sync` will report errors otherwise).
-- Use `dnf` and `playwright install-deps` rather than copying Ubuntu `apt` package names verbatim.
+- Use **`dnf`** for Playwright system libraries; do **not** use `playwright install-deps` (unsupported on Oracle Linux ARM).
+- Ensure security lists / NSGs allow **outbound** HTTPS.
+- Python 3.13+ wheels must exist for your CPU architecture (`uv sync` will report errors otherwise).
+
+---
+
+## Development machines
+
+For a personal workstation without root, you may clone the repo elsewhere and use a user-level systemd unit. Production VPS deployments should use `/opt/greatwalk-bot` and the system unit described above. See [telegram.md](telegram.md) for optional `~/.config/greatwalkbot/env` on non-production hosts.
